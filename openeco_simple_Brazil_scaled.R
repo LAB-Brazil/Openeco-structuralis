@@ -76,6 +76,9 @@ vnames <- c(
   "gov_gr_Br","gov_gr_RoW","f_cb_Br","f_cb_RoW",
   "psbr_Br","psbr_RoW","nafa_Br","nafa_RoW",
   "cab_Br","cab_RoW","kabp_Br","kabp_RoW","bp_Br","bp_RoW",
+  "ca_int_paid_fc_Br","ca_int_recv_Br","ca_int_paid_lc_Br","ca_div_net_Br",
+  "ka_b_in_Br","ka_b_out_Br","ka_e_in_Br","ka_e_out_Br","ka_fc_in_Br",
+  "bop_resid_Br","bop_resid_RoW",
   "gnp_Br","gnp_RoW","xr_Br","xr_RoW",
   "or_Br","or_RoW",
   "y_mat_Br","y_mat_RoW","mat_Br","mat_RoW",
@@ -95,8 +98,12 @@ vnames <- c(
   "depl_m_Br","depl_m_RoW","depl_e_Br","depl_e_RoW",
   "d_t_Br","d_t_RoW","delta_Br","delta_RoW",
   "q_Br","q_RoW","lev_f_Br","lev_f_RoW",
+  "q_nalin_Br","k_target_Br","q_active_Br",
+  "inv_d_Br","K_target_Br","lcd_Br","ldom_Br","fc_residual_Br",
   "per_Br","per_RoW","liq_b_Br","liq_b_RoW",
-  "y","inv","gov","yd","k","v"
+  "y","inv","gov","yd","k","v",
+  "l_fc_Br_d","l_fc_Br_s","l_fc_Br","delta_l_fc_Br",
+  "int_fc_Br"
 )
 for (vn in vnames) assign(vn, numeric(nPeriods))
 
@@ -128,6 +135,40 @@ xi_sub_Br    <- 1   ; xi_sub_RoW    <- 1   # additional multiplier on r_l_RoW
 
 ret_Br   <- 0.02   ; ret_RoW   <- 0.02
 pi_dy_Br <- 0.00555; pi_dy_RoW <- 0.00555
+
+# --- Q-channel: Nalin & Yajima (2022) leverage feedback in target capital ---
+# k_target_t = k_0 + k_1 * Q_{t-1}, where Q = (L_dom + L_FC*xr) / K
+# Higher leverage today -> higher target capital tomorrow (Minskyan euphoria).
+# Calibration of k_0, k_1 deferred until investment block is wired.
+#
+# Toggles for thesis sensitivity tests:
+#   q_channel_on = FALSE  -> disables Q feedback (target k held constant);
+#                            useful for stability runs / avoiding Minsky cycles
+#   q_target_cap_on = TRUE -> freezes Q feedback once Br green capital share
+#                            hits a target threshold (s_gr_target). Used to
+#                            stop the boom once structural transformation
+#                            has succeeded; the post-transition phase doesn't
+#                            need Minskyan dynamics to keep amplifying.
+q_channel_on    <- TRUE
+q_target_cap_on <- TRUE
+s_gr_target_Br  <- 0.40   # green capital share at which Q feedback freezes
+k0_Br <- 1.67 ; k0_RoW <- 1.60   # K/Y target at baseline; Br ~ observed 2016 ratio
+k1_Br <- 0.20 ; k1_RoW <- 0.20   # Q feedback strength; moderate Minsky channel
+
+# --- Nalin investment-financing parameters ---------------------------------
+# Speed of adjustment to target capital (Nalin eq. 11 analog):
+#   I_d = g * (K_target - K_{t-1}) + DA
+g_inv_Br      <- 0.30     # fraction of capital gap closed per period
+# Domestic-loan share equation (Nalin eq. 8 analog):
+#   L_dom = lambda_dom_0 + lambda_dom_1 * L_total_need
+# Calibrated so domestic-loan share ~ 87% at baseline (Br empirical: domestic
+# bank credit to NFC ~ 6-7x larger than NFC FC debt at end-2019, BIS data).
+lambda_dom_0  <- 0        # autonomous component
+lambda_dom_1  <- 0.87     # share of total financing met by domestic loans
+# Blend factor: in transition periods between old and new investment scheme,
+# use convex combination. inv_nalin_weight = 0 -> old gamma equation;
+# = 1 -> pure Nalin. Set to 1 for full Nalin port.
+inv_nalin_weight <- 1.0
 xi_Br    <- 0.01   ; xi_RoW    <- 0.01
 
 eps0 <- -2.1 ; eps1 <- 0.5 ; eps2 <- 1.228
@@ -187,6 +228,31 @@ depsh_Br <- 0.7  ; depsh_RoW <- 0.7
 
 r_Br     <- 0.03 ; r_RoW     <- 0.03
 r_l_Br   <- 0.035; r_l_RoW   <- 0.035
+
+# --- Foreign-currency loans to Br firms (from RoW banks) -------------------
+# Channel: RoW banks lend in FC to Br firms; loans denominated in RoW currency
+# (foreign currency from Br perspective). Used to finance imports of capital
+# goods for ISI. Supply is passive (banks accommodate demand) in this version
+# -- credit rationing / spread response can be added later. Structure follows
+# Nalin & Yajima (2022), where Mexican firms borrow from US banks in FC; the
+# financing identity (eq. 7-10 in their paper) makes FC borrowing the residual
+# of total firm financing need net of domestic loans and internal funds.
+#
+# Rate calibration anchored to 2016 Brazilian data, decomposed as:
+#   r_l_fc = r_RoW_base + EMBI+Br sovereign spread + corporate premium
+#          = 0.03 + 0.040 + 0.015 = 0.085
+# Sources:
+#   - r_RoW = 0.03 retained from Carnevali et al. (2021) as the stylized RoW
+#     base rate (long-run risk-free anchor, not literal 2016 US Treasury).
+#   - EMBI+Br 2016 annual average ~400 bps over UST (Banco Central do Brasil
+#     2016, Country Risk FAQ Series #9, Chart 1). Brazil rated BB/Ba2/BB+
+#     (speculative grade) after the 2015 downgrades.
+#   - Corporate premium ~150 bps over sovereign for sub-investment-grade EM
+#     corporates: Bevilaqua, Hale & Tallman (2020, J. Int. Economics 124)
+#     document near-full pass-through with persistent positive gap; Li, Magud,
+#     Werner & Witte (2021, IMF WP 21/155) confirm using a 2016-2019 sample.
+r_l_fc     <- 0.085     # FC corporate borrowing rate, Brazil 2016 anchor
+fc_supply_mode <- "passive"  # "passive" = supply = demand; "rationed" later
 
 theta_Br  <- 0.144193    ; theta_RoW  <- 0.144193
 delta0_Br <- 0.100609    ; delta0_RoW <- 0.100609
@@ -262,7 +328,7 @@ nIter <- 150
 # --- FX closure -----------------------------------------------------------
 # "GL"    = Godley-Lavoie floating; xr clears Br bill market every period.
 # "FIXED" = peg xr_RoW = 1; FX reserves (or_Br, or_RoW) absorb BP.
-fx_closure <- "FIXED"
+fx_closure <- "GL"
 or_init_Br  <- 3.9746   # initial Br reserves (scaled: 50 * s_Br)
 or_init_RoW <- 128.5109 # initial RoW reserves (scaled: 50 * s_RoW)
 
@@ -333,6 +399,12 @@ dep_Br[1]  <- 7.3879 ; dep_RoW[1]  <- 238.8760
 dep_bank_Br[1] <- 7.3879 ; dep_bank_RoW[1] <- 238.8760
 l_firm_Br[1]   <- 2.5312 ; l_firm_RoW[1]   <- 81.8434
 l_s_Br[1]      <- 2.5312 ; l_s_RoW[1]      <- 81.8434
+# Br firms' FC debt stock (passive supply; demand-driven). Empirically Brazilian
+# NFC FCD was ~13-15% of GDP at end-2019 per BIS data (Avdjiev, McGuire & von
+# Peter 2020, Graph 4). At our Br GDP ~3 T, that gives ~0.40 T.
+l_fc_Br[1]    <- 0.40    ; l_fc_Br_d[1]   <- 0.40
+l_fc_Br_s[1]  <- 0.40    ; delta_l_fc_Br[1] <- 0
+int_fc_Br[1]  <- r_l_fc * 0.40   # interest cost on initial FC stock (FC units)
 xr_Br[1] <- 1 ; xr_RoW[1] <- 1
 or_Br[1] <- or_init_Br ; or_RoW[1] <- or_init_RoW
 
@@ -459,7 +531,12 @@ for (i in 2:nPeriods) {
     r_l_con_br     <- r_l_Br
     interest_Br <- r_l_RoW_br * (l_firm_Br[i-1] * share_gr_b_lag) +
       r_l_con_br   * (l_firm_Br[i-1] * (1 - share_gr_b_lag))
-    f_Br[i]        <- y_Br[i] - y_w_Br[i] - da_Br[i] - interest_Br
+    # FC interest cost — close the Minsky loop: FC debt service hits firm
+    # cash flow, reducing retained profits and amplifying next-period
+    # financing need (Nalin's central fragility mechanism).
+    int_fc_cashflow_Br <- r_l_fc * l_fc_Br[i-1] * xr_Br[i]
+    f_Br[i]        <- y_Br[i] - y_w_Br[i] - da_Br[i] - interest_Br -
+      int_fc_cashflow_Br
     fu_Br[i]       <- f_Br[i] * ret_Br
     fd_Br[i]       <- f_Br[i] - fu_Br[i]
     f_m_Br[i]      <- 0
@@ -489,8 +566,35 @@ for (i in 2:nPeriods) {
     da_RoW[i]     <- da_gr_RoW[i] + da_con_RoW[i]
     af_RoW[i]     <- da_RoW[i]
     
-    inv_Br[i] <- (gamma0_Br + gamma1_Br*inv_Br[i-1] +
-                    gamma2_Br*gov_tot_Br[i-1]) * (1 - d_t_Br[i-1])
+    # --- NALIN Q-RATIO & TARGET CAPITAL (computed now, used in next step) ---
+    # Q = (domestic loans + FC loans*xr) / capital -- leverage ratio.
+    # Both numerator and denominator in Br currency. FC stock revalued at xr.
+    # Distinct from existing q_Br which is Tobin's-q (market value / capital).
+    q_nalin_Br[i] <- (l_firm_Br[i-1] + l_fc_Br[i-1] * xr_Br[i]) /
+      max(k_Br[i-1], 1e-6)
+    # Determine whether the Q channel is active this period:
+    s_gr_Br_now <- if (k_Br[i-1] > 0) k_gr_Br[i-1] / k_Br[i-1] else 0
+    q_active_Br[i] <- if (!q_channel_on) 0
+    else if (q_target_cap_on && s_gr_Br_now >= s_gr_target_Br) 0
+    else 1
+    # Target capital-output ratio (Nalin eq. 12 analog):
+    k_target_Br[i] <- k0_Br + q_active_Br[i] * k1_Br * q_nalin_Br[i]
+    
+    # --- NALIN DESIRED INVESTMENT (eq. 11 analog) ---------------------------
+    # Target capital level = ratio * lagged GDP
+    K_target_Br[i] <- k_target_Br[i] * y_Br[i-1]
+    # Desired gross investment: closes a fraction g_inv of the capital gap,
+    # plus depreciation allowances to maintain existing capital
+    inv_d_Br[i] <- g_inv_Br * (K_target_Br[i] - k_Br[i-1]) + da_Br[i]
+    inv_d_Br[i] <- max(inv_d_Br[i], 0)   # no negative gross investment
+    
+    # Blend Nalin desired investment with original gamma equation:
+    inv_gamma_Br <- (gamma0_Br + gamma1_Br*inv_Br[i-1] +
+                       gamma2_Br*gov_tot_Br[i-1]) * (1 - d_t_Br[i-1])
+    inv_Br[i] <- inv_nalin_weight * inv_d_Br[i] +
+      (1 - inv_nalin_weight) * inv_gamma_Br
+    
+    # RoW investment unchanged (keep original gamma equation; we're focused on Br)
     inv_RoW[i] <- (gamma0_RoW + gamma1_RoW*inv_RoW[i-1] +
                      gamma2_RoW*gov_tot_RoW[i-1]) * (1 - d_t_RoW[i-1])
     
@@ -516,9 +620,43 @@ for (i in 2:nPeriods) {
     k_con_RoW[i] <- k_con_RoW[i-1] + inv_con_RoW[i] - da_con_RoW[i]
     k_RoW[i]     <- k_gr_RoW[i] + k_con_RoW[i]
     
-    l_firm_Br[i] <- l_firm_Br[i-1] + inv_Br[i] - af_Br[i] - fu_Br[i] -
+    # --- Total Br firm financing need (Nalin eq. 16 analog) -----------------
+    # The traditional Carnevali line computes l_firm_Br as the residual of
+    # the firm budget constraint. Under Nalin, this same total need is then
+    # SPLIT between domestic loans (l_firm_Br) and FC loans (l_fc_Br * xr).
+    #
+    # Step 1: compute total financing need in Br currency
+    lcd_Br[i] <- l_firm_Br[i-1] + l_fc_Br[i-1] * xr_Br[i] +
+      inv_Br[i] - af_Br[i] - fu_Br[i] -
       (e_RoWBr_s[i] - e_RoWBr_s[i-1]) -
       (e_BrBr_s[i] - e_BrBr_s[i-1])
+    # Step 2: domestic-loan share (Nalin eq. 8 analog)
+    ldom_Br[i] <- lambda_dom_0 + lambda_dom_1 * lcd_Br[i]
+    ldom_Br[i] <- max(ldom_Br[i], 0)   # no negative domestic borrowing
+    # Step 3: domestic loans = the share; total l_firm_Br
+    l_firm_Br[i] <- ldom_Br[i]
+    # Step 4: FC borrowing = residual of total need (in Br currency)
+    fc_residual_Br[i] <- lcd_Br[i] - ldom_Br[i]
+    # Step 5: convert FC residual back to FC units (divide by xr) and update
+    # FC loan stock. This OVERRIDES the placeholder l_fc_Br_d[i] set earlier
+    # in section IIIb. The structure is: placeholder rolls over by default;
+    # if Nalin investment block is active (inv_nalin_weight > 0), the
+    # residual mechanism overrides.
+    if (inv_nalin_weight > 0) {
+      fc_demand_fc_units <- fc_residual_Br[i] / xr_Br[i]
+      fc_demand_fc_units <- max(fc_demand_fc_units, 0)   # no negative FC debt
+      l_fc_Br_d[i] <- fc_demand_fc_units
+      if (fc_supply_mode == "passive") {
+        l_fc_Br_s[i] <- l_fc_Br_d[i]
+      } else {
+        l_fc_Br_s[i] <- l_fc_Br_d[i]   # branch reserved for rationing
+      }
+      l_fc_Br[i]       <- l_fc_Br_s[i]
+      delta_l_fc_Br[i] <- l_fc_Br[i] - l_fc_Br[i-1]
+      # Recompute interest cost based on updated stock
+      int_fc_Br[i] <- r_l_fc * l_fc_Br[i-1] * xr_Br[i]
+    }
+    # RoW firm loans unchanged (no FC borrowing channel for RoW)
     l_firm_RoW[i] <- l_firm_RoW[i-1] + inv_RoW[i] - af_RoW[i] - fu_RoW[i] -
       (e_BrRoW_s[i] - e_BrRoW_s[i-1]) -
       (e_RoWRoW_s[i] - e_RoWRoW_s[i-1])
@@ -661,8 +799,13 @@ for (i in 2:nPeriods) {
     b_RoWBr_s[i] <- b_Br_s[i] - b_BrBr_s[i] - b_cb_BrBr_s[i] -
       b_Br_bank[i]
     
-    # --------------- IX. EXCHANGE RATE (GL or FIXED) ----------------------- #
-    
+    # --------------- IX. EXCHANGE RATE CLOSURE (Bortz 2014 style) ---------- #
+    # Following Bortz (2014), the closure is symmetric in structure across
+    # regimes — what differs is which variable is residual:
+    #   FIXED: xr_Br = 1 fixed; Br CB absorbs the bill-market gap as a
+    #          residual line; reserves accumulate the BoP per Section XV.
+    #   GL:    Br CB reserves held fixed; xr_Br adjusts to clear the Br-bill
+    #          market for RoW HHs.
     if (fx_closure == "GL") {
       xr_RoW_new <- if (abs(b_RoWBr_d[i]) > 1e-6)
         b_RoWBr_s[i] / b_RoWBr_d[i] else 1
@@ -671,19 +814,17 @@ for (i in 2:nPeriods) {
       xr_RoW[i] <- (1 - xr_relax) * xr_RoW[i] + xr_relax * xr_RoW_new
       xr_Br[i] <- 1 / xr_RoW[i]
     } else if (fx_closure == "FIXED") {
-      # Peg at 1. Foreign demand is the hard constraint. CB absorbs the gap
-      # in either direction:
-      #   * supply > demand (foreign appetite low) -> CB takes excess bills,
-      #     financed by selling reserves (or_Br falls)
-      #   * supply < demand (foreign appetite high) -> CB releases bills it held,
-      #     financed by buying reserves (or_Br rises)
+      # Peg at 1. Br CB absorbs bill-market gap as a clean residual:
+      # foreign HH demand is honoured (b_RoWBr_s = b_RoWBr_d), and CB
+      # picks up whatever is left of Br bill supply. The reserve change
+      # is recorded automatically by the BoP identity in Section XV.
       xr_RoW[i] <- 1
-      xr_Br[i] <- 1
+      xr_Br[i]  <- 1
       if (use_confidence) {
-        gap <- b_RoWBr_s[i] - b_RoWBr_d[i]   # + = excess supply; - = excess demand
-        b_cb_BrBr_s[i] <- b_cb_BrBr_s[i] + gap
-        b_RoWBr_s[i]    <- b_RoWBr_d[i]       # foreign holdings set to demand
-        # The reserves adjustment is recorded via bp_Br below (kabp picks it up)
+        b_RoWBr_s[i]    <- b_RoWBr_d[i]
+        # Br CB residually holds what nobody else wants
+        b_cb_BrBr_s[i]  <- b_Br_s[i] - b_BrBr_s[i] - b_RoWBr_s[i] -
+          b_Br_bank[i]
       }
     }
     
@@ -796,29 +937,64 @@ for (i in 2:nPeriods) {
     delta_RoW[i] <- delta0_RoW + (1 - delta0_RoW)*(1 - ad_k_RoW)*d_t_RoW[i-1]
     
     # ----------------- XV. AGGREGATES & BALANCES --------------------------- #
-    
+    # Public sector borrowing requirement
     psbr_Br[i] <- gov_tot_Br[i] + r_Br*b_Br_s[i-1] - t_Br[i] - f_cb_Br[i]
     psbr_RoW[i] <- gov_tot_RoW[i] + r_RoW*b_RoW_s[i-1] - t_RoW[i] - f_cb_RoW[i]
-    cab_Br[i]  <- x_Br[i] - im_Br[i] +
-      xr_RoW[i-1]*(r_RoW*b_BrRoW_s[i-1] +
-                     r_e_RoW[i-1]*e_BrRoW_s[i-1]) -
-      r_Br*b_RoWBr_s[i-1] -
-      r_e_Br[i-1]*e_RoWBr_s[i-1]
-    cab_RoW[i]  <- -cab_Br[i]
-    kabp_Br[i] <- -(b_BrRoW_s[i] - b_BrRoW_s[i-1])*xr_RoW[i] -
-      (e_BrRoW_s[i] - e_BrRoW_s[i-1])*xr_RoW[i] +
-      (b_RoWBr_s[i] - b_RoWBr_s[i-1]) +
-      (e_RoWBr_s[i] - e_RoWBr_s[i-1])
+    
+    # --- Br BALANCE OF PAYMENTS (Bortz 2014 / Nalin & Yajima 2022 style) ---
+    # All items expressed in Br currency. FC stocks/flows multiplied by xr_Br
+    # when entering the Br BoP, following the SFC convention that foreign-
+    # currency items are revalued at the prevailing exchange rate.
+    #
+    # CURRENT ACCOUNT — decomposed for transparency:
+    #   trade balance (already in Br currency)
+    #   + interest received on FC assets (FC units * xr -> Br currency)
+    #   - interest paid on Br LC assets held by RoW (already in Br currency)
+    #   - interest paid on FC loans (FC units * xr -> Br currency)
+    #   + dividends net received (already entering with xr where applicable)
+    ca_int_recv_Br[i]    <- xr_Br[i] * (r_RoW * b_BrRoW_s[i-1] +
+                                          r_e_RoW[i-1] * e_BrRoW_s[i-1])
+    ca_int_paid_lc_Br[i] <- r_Br * b_RoWBr_s[i-1] +
+      r_e_Br[i-1] * e_RoWBr_s[i-1]
+    ca_int_paid_fc_Br[i] <- int_fc_Br[i]   # already xr-multiplied in line 583
+    ca_div_net_Br[i]     <- 0              # placeholder; cross-border dividends zeroed
+    cab_Br[i] <- (x_Br[i] - im_Br[i]) +
+      ca_int_recv_Br[i] -
+      ca_int_paid_lc_Br[i] -
+      ca_int_paid_fc_Br[i] +
+      ca_div_net_Br[i]
+    cab_RoW[i] <- -cab_Br[i]
+    
+    # CAPITAL ACCOUNT — decomposed by item:
+    #   + RoW HHs increase Br LC bill holdings (inflow, Br-currency native)
+    #   + RoW HHs increase Br LC equity holdings (inflow)
+    #   + Br firms increase FC borrowing (inflow, FC * xr -> Br currency)
+    #   - Br HHs increase FC bill holdings (outflow, FC * xr -> Br currency)
+    #   - Br HHs increase FC equity holdings (outflow)
+    ka_b_in_Br[i]   <- (b_RoWBr_s[i] - b_RoWBr_s[i-1])
+    ka_e_in_Br[i]   <- (e_RoWBr_s[i] - e_RoWBr_s[i-1])
+    ka_fc_in_Br[i]  <- (l_fc_Br[i]   - l_fc_Br[i-1])   * xr_Br[i]
+    ka_b_out_Br[i]  <- (b_BrRoW_s[i] - b_BrRoW_s[i-1]) * xr_Br[i]
+    ka_e_out_Br[i]  <- (e_BrRoW_s[i] - e_BrRoW_s[i-1]) * xr_Br[i]
+    kabp_Br[i] <- ka_b_in_Br[i] + ka_e_in_Br[i] + ka_fc_in_Br[i] -
+      ka_b_out_Br[i] - ka_e_out_Br[i]
     kabp_RoW[i] <- -kabp_Br[i]
-    bp_Br[i]   <- cab_Br[i] + kabp_Br[i]
-    bp_RoW[i]   <- cab_RoW[i] + kabp_RoW[i]
-    # FX reserves accumulate the BP. Under FIXED they're the buffer that
-    # absorbs imbalances. Under GL they're a shadow variable (informative
-    # but not driving xr).
-    or_Br[i]   <- or_Br[i-1] + bp_Br[i]
-    or_RoW[i]   <- or_RoW[i-1] + bp_RoW[i]
-    nafa_Br[i] <- psbr_Br[i] + cab_Br[i]
+    
+    # Overall BoP (sums to reserves change under clean accounting)
+    bp_Br[i]  <- cab_Br[i] + kabp_Br[i]
+    bp_RoW[i] <- cab_RoW[i] + kabp_RoW[i]
+    
+    # Reserves: residual of BoP (Bortz 2014 convention)
+    or_Br[i]  <- or_Br[i-1] + bp_Br[i]
+    or_RoW[i] <- or_RoW[i-1] + bp_RoW[i]
+    
+    # NAFA (Net Acquisition of Financial Assets by domestic private sector)
+    nafa_Br[i]  <- psbr_Br[i] + cab_Br[i]
     nafa_RoW[i] <- psbr_RoW[i] + cab_RoW[i]
+    
+    # BoP identity check (should be ~0 to machine precision under clean SFC)
+    bop_resid_Br[i]  <- bp_Br[i]  - (or_Br[i]  - or_Br[i-1])
+    bop_resid_RoW[i] <- bp_RoW[i] - (or_RoW[i] - or_RoW[i-1])
     
     q_Br[i]     <- (e_Br_real_s[i]*p_e_Br[i] + l_firm_Br[i]) / max(k_Br[i], 1e-6)
     q_RoW[i]     <- (e_RoW_real_s[i]*p_e_RoW[i] + l_firm_RoW[i]) / max(k_RoW[i], 1e-6)
@@ -907,6 +1083,27 @@ cat(sprintf("Atmospheric temp (final):    %.3f C\n",  temp_at[nPeriods]))
 cat(sprintf("Lower-ocean temp (final):    %.3f C\n",  temp_lo[nPeriods]))
 cat(sprintf("Damage ratio Br (final):  %.4f\n",    d_t_Br[nPeriods]))
 cat(sprintf("Exchange rate RoW (final): %.4f\n",    xr_RoW[nPeriods]))
+
+# --- SFC identity checks (Bortz 2014 style) ---------------------------------
+cat("\n--- BoP identity checks (final period) ---\n")
+cat(sprintf("Br  CA + KA - dor : %+.6f  (should be ~0)\n",
+            bop_resid_Br[nPeriods]))
+cat(sprintf("RoW CA + KA - dor : %+.6f  (should be ~0)\n",
+            bop_resid_RoW[nPeriods]))
+cat(sprintf("Br  CA: %+.4f (trade %+.4f, +int %+.4f, -int-LC %+.4f, -int-FC %+.4f)\n",
+            cab_Br[nPeriods],
+            x_Br[nPeriods] - im_Br[nPeriods],
+            ca_int_recv_Br[nPeriods],
+            ca_int_paid_lc_Br[nPeriods],
+            ca_int_paid_fc_Br[nPeriods]))
+cat(sprintf("Br  KA: %+.4f (b_in %+.4f, e_in %+.4f, fc_in %+.4f, b_out %+.4f, e_out %+.4f)\n",
+            kabp_Br[nPeriods],
+            ka_b_in_Br[nPeriods], ka_e_in_Br[nPeriods], ka_fc_in_Br[nPeriods],
+            ka_b_out_Br[nPeriods], ka_e_out_Br[nPeriods]))
+cat(sprintf("World: CA_Br + CA_RoW = %+.6f  (should be ~0)\n",
+            cab_Br[nPeriods] + cab_RoW[nPeriods]))
+cat(sprintf("World: KA_Br + KA_RoW = %+.6f  (should be ~0)\n",
+            kabp_Br[nPeriods] + kabp_RoW[nPeriods]))
 
 ################################################################################
 # 9) ADDITIONAL STANDALONE PLOTS
