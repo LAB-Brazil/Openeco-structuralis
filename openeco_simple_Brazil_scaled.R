@@ -25,8 +25,15 @@ cat("\014")
 # 2) TIME SPAN
 ################################################################################
 
-nPeriods_report <- 44  # periods to report/plot (2017-2060)
-burn_in         <- 5   # periods to discard from start for IC consistency
+nPeriods_report <- 100  # periods to report/plot (2017-2060)
+# Burn-in: discarded from start so GL xr dynamics + augmented-model
+# (FC loans, Bortz BoP, Nalin investment) can converge to a self-consistent
+# state before reporting. Methodological note: this is a workaround for the
+# fact that we have not yet re-solved initial conditions under the augmented
+# equations. Nalin, Bortz, and Souza & Silva all use steady-state-solved IC
+# instead of burn-in. To be addressed before thesis finalisation; for now,
+# read trajectory shapes and policy differences rather than absolute levels.
+burn_in         <- 15
 nPeriods        <- nPeriods_report + burn_in  # total sim length
 
 run_s5    <- FALSE
@@ -332,6 +339,15 @@ fx_closure <- "GL"
 or_init_Br  <- 3.9746   # initial Br reserves (scaled: 50 * s_Br)
 or_init_RoW <- 128.5109 # initial RoW reserves (scaled: 50 * s_RoW)
 
+# --- Shock toggles --------------------------------------------------------
+# Fed tightening: at t = t_shock_fed, r_RoW jumps by fed_uplift (permanent).
+# Cascades into FC corporate rate (r_l_fc) since r_l_fc is decomposed as
+# r_RoW + EM sovereign spread + corporate premium. Empirical analog: the
+# 2013 taper tantrum or 2022 Fed hiking cycle.
+shock_fed     <- FALSE
+fed_uplift    <- 0.02     # +200 bp on RoW base rate
+t_shock_fed   <- 22       # period at which the shock hits (reported scale)
+
 ################################################################################
 # 5) INITIAL CONDITIONS (period 1)
 ################################################################################
@@ -452,7 +468,26 @@ s_gr_Br_0   <- k_gr_Br[1] / k_Br[1]
 # 6) SIMULATION LOOP
 ################################################################################
 
+# Logical flag for hard-guard triggers: TRUE in any period where the FX
+# market clearing fell back to its previous value because demand was below
+# 1e-6 in absolute value. Plotted as a red vertical line in all subsequent
+# figures (see Section 7) so any economic-death event is visible.
+xr_guard_fired <- logical(nPeriods)
+
 for (i in 2:nPeriods) {
+  
+  # --- Fed tightening shock ---
+  # When activated, r_RoW jumps by fed_uplift at absolute period burn_in +
+  # t_shock_fed and stays elevated. r_l_fc cascades: r_l_fc was calibrated
+  # as r_RoW (3%) + EMBI sovereign spread (4%) + corp premium (1.5%) = 8.5%.
+  # We preserve the spread and lift the base, so r_l_fc rises by the same
+  # amount as r_RoW. The sovereign EMBI spread itself could also widen
+  # under Fed tightening (this typically happens empirically), but we keep
+  # that as a separate shock to isolate channels.
+  if (shock_fed && i == burn_in + t_shock_fed) {
+    r_RoW   <- r_RoW   + fed_uplift
+    r_l_fc  <- r_l_fc  + fed_uplift
+  }
   
   # Re-anchor Br land-emission reference values at the start of reported time
   # (absolute period burn_in+1 = reported period 1). The formula then uses
@@ -586,7 +621,9 @@ for (i in 2:nPeriods) {
     # Desired gross investment: closes a fraction g_inv of the capital gap,
     # plus depreciation allowances to maintain existing capital
     inv_d_Br[i] <- g_inv_Br * (K_target_Br[i] - k_Br[i-1]) + da_Br[i]
-    inv_d_Br[i] <- max(inv_d_Br[i], 0)   # no negative gross investment
+    # Negative gross investment is allowed: firms can divest, sell capital
+    # assets, draw down inventories. Empirically observed e.g. Mexico 1995
+    # (Tequila), Mexico 2015 (Nalin Figure 2.1: GFCF ~ -6%).
     
     # Blend Nalin desired investment with original gamma equation:
     inv_gamma_Br <- (gamma0_Br + gamma1_Br*inv_Br[i-1] +
@@ -630,9 +667,11 @@ for (i in 2:nPeriods) {
       inv_Br[i] - af_Br[i] - fu_Br[i] -
       (e_RoWBr_s[i] - e_RoWBr_s[i-1]) -
       (e_BrBr_s[i] - e_BrBr_s[i-1])
-    # Step 2: domestic-loan share (Nalin eq. 8 analog)
+    # Step 2: domestic-loan share (Nalin eq. 8 analog).
+    # Bounded at zero: negative ldom would mean firms net-depositors at
+    # domestic banks, which isn't a separate asset class we track.
     ldom_Br[i] <- lambda_dom_0 + lambda_dom_1 * lcd_Br[i]
-    ldom_Br[i] <- max(ldom_Br[i], 0)   # no negative domestic borrowing
+    ldom_Br[i] <- max(ldom_Br[i], 0)
     # Step 3: domestic loans = the share; total l_firm_Br
     l_firm_Br[i] <- ldom_Br[i]
     # Step 4: FC borrowing = residual of total need (in Br currency)
@@ -642,9 +681,11 @@ for (i in 2:nPeriods) {
     # in section IIIb. The structure is: placeholder rolls over by default;
     # if Nalin investment block is active (inv_nalin_weight > 0), the
     # residual mechanism overrides.
+    # Bounded at zero: negative l_fc would mean firms hold FC deposits at
+    # RoW banks (no income flow tracked in our model).
     if (inv_nalin_weight > 0) {
       fc_demand_fc_units <- fc_residual_Br[i] / xr_Br[i]
-      fc_demand_fc_units <- max(fc_demand_fc_units, 0)   # no negative FC debt
+      fc_demand_fc_units <- max(fc_demand_fc_units, 0)
       l_fc_Br_d[i] <- fc_demand_fc_units
       if (fc_supply_mode == "passive") {
         l_fc_Br_s[i] <- l_fc_Br_d[i]
@@ -700,8 +741,15 @@ for (i in 2:nPeriods) {
     
     b_BrBr_d[i] <- v_Br[i]*(lambda10 + lambda11*r_Br - lambda12*r_RoW -
                               lambda13*r_e_Br[i-1] - lambda14*r_e_RoW[i-1])
-    b_BrRoW_d[i] <- v_Br[i]*(lambda20 - lambda21*r_Br + lambda22*r_RoW -
-                               lambda23*r_e_Br[i-1] - lambda24*r_e_RoW[i-1])
+    # Br HHs' demand for RoW bills: same 1e-10 floor logic as b_RoWBr_d.
+    # (Br investors fleeing RoW assets crashes their FX exposure to near-zero.)
+    b_BrRoW_d_notional <- v_Br[i]*(lambda20 - lambda21*r_Br + lambda22*r_RoW -
+                                     lambda23*r_e_Br[i-1] - lambda24*r_e_RoW[i-1])
+    if (b_BrRoW_d_notional < 1e-10) {
+      b_BrRoW_d[i] <- 1e-10
+    } else {
+      b_BrRoW_d[i] <- b_BrRoW_d_notional
+    }
     e_BrRoW_d[i] <- 0
     e_BrBr_d[i] <- v_Br[i]*((lambda90 + lambda70) - lambda91*r_Br - lambda92*r_RoW +
                               lambda93*r_e_Br[i-1] - lambda94*r_e_RoW[i-1])
@@ -720,8 +768,23 @@ for (i in 2:nPeriods) {
     Y_tot_lag   <- y_Br[i-1] + y_RoW[i-1]
     Br_share_w  <- if (Y_tot_lag > 0) y_Br[i-1] / Y_tot_lag else 0.03
     lambda50_t  <- lambda50_bar * Br_share_w * conf_br
-    b_RoWBr_d[i] <- v_RoW[i]*(lambda50_t + lambda51*r_Br - lambda52*r_RoW -
-                                lambda53*r_e_Br[i-1] - lambda54*r_e_RoW[i-1])
+    # Notional cross-border bill demand (before floor).
+    b_RoWBr_d_notional <- v_RoW[i]*(lambda50_t + lambda51*r_Br - lambda52*r_RoW -
+                                      lambda53*r_e_Br[i-1] - lambda54*r_e_RoW[i-1])
+    # Floor at 1e-10 instead of switching dummy to zero. Theoretical reading:
+    # when notional portfolio demand falls below an arbitrarily small positive
+    # threshold, foreign appetite for Br bills has effectively vanished, so
+    # any infinitesimal residual supply outweighs demand to a numerically
+    # extreme degree. The FX-clearing ratio supply/demand then drives xr
+    # toward zero (the peso "crashes" to near-worthlessness). Our own
+    # modeling choice; not in Carnevali, Nalin, or Bortz. The events are
+    # tracked via xr_guard_fired and shown as red lines in all plots.
+    if (b_RoWBr_d_notional < 1e-10) {
+      b_RoWBr_d[i] <- 1e-10
+      xr_guard_fired[i] <- TRUE
+    } else {
+      b_RoWBr_d[i] <- b_RoWBr_d_notional
+    }
     e_RoWBr_d[i] <- 0
     e_RoWRoW_d[i] <- v_RoW[i]*((lambda100 + lambda80) - lambda101*r_Br - lambda102*r_RoW -
                                  lambda103*r_e_Br[i-1] + lambda104*r_e_RoW[i-1])
@@ -807,10 +870,12 @@ for (i in 2:nPeriods) {
     #   GL:    Br CB reserves held fixed; xr_Br adjusts to clear the Br-bill
     #          market for RoW HHs.
     if (fx_closure == "GL") {
-      xr_RoW_new <- if (abs(b_RoWBr_d[i]) > 1e-6)
-        b_RoWBr_s[i] / b_RoWBr_d[i] else 1
-      if (is.na(xr_RoW_new) || !is.finite(xr_RoW_new) ||
-          xr_RoW_new < 0.1 || xr_RoW_new > 10) xr_RoW_new <- 1
+      # GL closure (Godley & Lavoie 2007 Ch. 12): xr clears the Br bill
+      # market for RoW HHs. With the 1e-10 floor on b_RoWBr_d, the ratio
+      # supply/demand is always well-defined.
+      xr_RoW_new <- b_RoWBr_s[i] / b_RoWBr_d[i]
+      # Within-iteration relaxation (standard in iterative SFC solvers, see
+      # Godley & Lavoie 2007 Ch. 12 for the iterative method)
       xr_RoW[i] <- (1 - xr_relax) * xr_RoW[i] + xr_relax * xr_RoW_new
       xr_Br[i] <- 1 / xr_RoW[i]
     } else if (fx_closure == "FIXED") {
@@ -1020,6 +1085,18 @@ for (i in 2:nPeriods) {
 i_plot <- (burn_in + 1):nPeriods   # discard burn-in transient
 periods <- 1:length(i_plot)         # relabel as 1..nPeriods_report for display
 
+# --- Hard-guard firing diagnostic ---
+# Map absolute periods where any hard guard fired into reported periods.
+# Used to draw red vertical lines on every plot, signalling "the model's
+# numerical safety net caught a divide-by-zero; economic interpretation
+# is that the currency market collapsed at that period."
+guard_periods_rep <- which(xr_guard_fired[i_plot])
+add_guard_lines <- function() {
+  if (length(guard_periods_rep) > 0) {
+    abline(v = guard_periods_rep, col = "red", lwd = 1, lty = 1)
+  }
+}
+
 old.par <- par(no.readonly = TRUE)
 layout(matrix(1:6, nrow = 3, ncol = 2, byrow = TRUE))
 par(mar = c(4, 4.5, 3, 1.5), cex.main = 1.0, font.main = 1)
@@ -1027,6 +1104,7 @@ par(mar = c(4, 4.5, 3, 1.5), cex.main = 1.0, font.main = 1)
 plot(periods, y_Br[i_plot], type = "l", lwd = 2, col = "orange",
      ylim = range(c(y_Br[i_plot], y_RoW[i_plot])),
      main = "a) GDP by area", xlab = "Period", ylab = "Trillion USD")
+add_guard_lines()
 lines(periods, y_RoW[i_plot], lwd = 2, col = "forestgreen")
 legend("topleft", c("Br","RoW"),
        col = c("orange","forestgreen"), lwd = 2, bty = "n", cex = 0.85)
@@ -1035,12 +1113,14 @@ plot(periods, temp_at[i_plot], type = "l", lwd = 2, col = "blue",
      main = "b) Atmospheric & lower-ocean temperature",
      xlab = "Period", ylab = "Anomaly (deg C)",
      ylim = range(c(temp_at[i_plot], temp_lo[i_plot])))
+add_guard_lines()
 lines(periods, temp_lo[i_plot], lwd = 2, col = "#18a8d1")
 legend("topleft", c("Atmosphere","Lower ocean"),
        col = c("blue","#18a8d1"), lwd = 2, bty = "n", cex = 0.85)
 
 plot(periods, emis[i_plot], type = "l", lwd = 2, col = "black",
      main = "c) Total CO2 emissions per year", xlab = "Period", ylab = "Gt CO2/yr")
+add_guard_lines()
 lines(periods, emis_Br[i_plot], col = "orange", lwd = 2)
 lines(periods, emis_RoW[i_plot], col = "forestgreen", lwd = 2)
 lines(periods, emis_l[i_plot], col = "darkblue", lwd = 2)
@@ -1050,10 +1130,12 @@ legend("topright", c("Total","Br","RoW","Land"),
 
 plot(periods, co2_at[i_plot], type = "l", lwd = 2, col = "purple",
      main = "d) Atmospheric CO2 concentration", xlab = "Period", ylab = "Gt CO2")
+add_guard_lines()
 
 plot(periods, k_e[i_plot], type = "l", lwd = 2, col = "deeppink",
      ylim = range(c(k_e[i_plot], k_m[i_plot])),
      main = "e) Reserves of energy & matter", xlab = "Period", ylab = "Stock")
+add_guard_lines()
 lines(periods, k_m[i_plot], lwd = 2, col = "purple")
 legend("topleft", c("Energy (Ej)","Matter (Gt)"),
        col = c("deeppink","purple"), lwd = 2, bty = "n", cex = 0.85)
@@ -1061,6 +1143,7 @@ legend("topleft", c("Energy (Ej)","Matter (Gt)"),
 plot(periods, d_t_Br[i_plot], type = "l", lwd = 2, col = "orange",
      ylim = range(c(d_t_Br[i_plot], d_t_RoW[i_plot])),
      main = "f) Climate damage ratio", xlab = "Period", ylab = "d_t")
+add_guard_lines()
 lines(periods, d_t_RoW[i_plot], lwd = 2, col = "forestgreen")
 legend("topleft", c("Br","RoW"),
        col = c("orange","forestgreen"), lwd = 2, bty = "n", cex = 0.85)
@@ -1105,6 +1188,28 @@ cat(sprintf("World: CA_Br + CA_RoW = %+.6f  (should be ~0)\n",
 cat(sprintf("World: KA_Br + KA_RoW = %+.6f  (should be ~0)\n",
             kabp_Br[nPeriods] + kabp_RoW[nPeriods]))
 
+# --- Hard-guard firing diagnostic ---
+cat("\n--- Numerical guard triggers ---\n")
+n_fired <- sum(xr_guard_fired)
+if (n_fired == 0) {
+  cat("b_RoWBr_d floor (1e-10): never triggered\n")
+} else {
+  fired_abs <- which(xr_guard_fired)
+  fired_rep <- fired_abs - burn_in
+  fired_rep_in_view <- fired_rep[fired_rep >= 1]
+  cat(sprintf("b_RoWBr_d floor (1e-10): triggered in %d period(s).\n", n_fired))
+  if (length(fired_rep_in_view) > 0) {
+    cat(sprintf("  First fire: reported period %d  (absolute %d).\n",
+                fired_rep_in_view[1], fired_abs[which(fired_rep == fired_rep_in_view[1])]))
+    cat(sprintf("  All reported-period fires: %s\n",
+                paste(fired_rep_in_view, collapse=", ")))
+  }
+  cat("  ECONOMIC INTERPRETATION: notional RoW demand for Br bills fell\n")
+  cat("  below 1e-10, indicating foreign appetite for the Br currency\n")
+  cat("  has vanished. The FX-clearing ratio supply/demand then drives\n")
+  cat("  xr toward zero -- the peso effectively crashes to worthless.\n")
+}
+
 ################################################################################
 # 9) ADDITIONAL STANDALONE PLOTS
 ################################################################################
@@ -1116,6 +1221,7 @@ par(mar = c(4, 4.5, 3, 1.5), cex.main = 1.0, font.main = 1)
 plot(periods, or_Br[i_plot], type = "l", lwd = 2, col = "orange",
      main = "Br FX reserves",
      xlab = "Period", ylab = "Reserves (T USD)")
+add_guard_lines()
 abline(h = or_init_Br, lty = 2, col = "grey50")
 legend("topleft",
        legend = c("Br", "Br initial"),
@@ -1129,6 +1235,7 @@ par(mar = c(4, 4.5, 3, 1.5), cex.main = 1.0, font.main = 1)
 plot(periods, emis_Br[i_plot], type = "l", lwd = 2, col = "orange",
      main = "Br CO2 emissions",
      xlab = "Period", ylab = "Gt CO2 / yr")
+add_guard_lines()
 legend("topright",
        legend = "Br",
        col    = "orange",
@@ -1143,6 +1250,7 @@ plot(periods, x_Br[i_plot], type = "l", lwd = 2, col = "orange",
      ylim = range(c(x_Br[i_plot], im_Br[i_plot])),
      main = "a) Br trade flows (real)",
      xlab = "Period", ylab = "Trillion USD")
+add_guard_lines()
 lines(periods, im_Br[i_plot], lwd = 2, col = "deeppink")
 legend("topleft",
        legend = c("Br exports", "Br imports"),
@@ -1152,6 +1260,7 @@ legend("topleft",
 plot(periods, tb_Br[i_plot], type = "l", lwd = 2, col = "purple",
      main = "b) Trade balance (Br)",
      xlab = "Period", ylab = "Trillion USD")
+add_guard_lines()
 abline(h = 0, lty = 2, col = "grey50")
 
 # (c) Cross-border bill holdings (both areas — kept bilateral by request)
@@ -1159,6 +1268,7 @@ plot(periods, b_BrRoW_s[i_plot], type = "l", lwd = 2, col = "orange",
      ylim = range(c(b_BrRoW_s[i_plot], b_RoWBr_s[i_plot])),
      main = "c) Cross-border bill holdings",
      xlab = "Period", ylab = "Trillion USD")
+add_guard_lines()
 lines(periods, b_RoWBr_s[i_plot], lwd = 2, col = "forestgreen")
 legend("topleft",
        legend = c("Br holdings of RoW bills", "RoW holdings of Br bills"),
@@ -1169,6 +1279,7 @@ plot(periods, cab_Br[i_plot], type = "l", lwd = 2, col = "darkblue",
      ylim = range(c(cab_Br[i_plot], kabp_Br[i_plot], bp_Br[i_plot])),
      main = "d) Balance of payments (Br)",
      xlab = "Period", ylab = "Trillion USD")
+add_guard_lines()
 lines(periods, kabp_Br[i_plot], lwd = 2, col = "deeppink")
 lines(periods, bp_Br[i_plot],   lwd = 2, col = "black")
 abline(h = 0, lty = 2, col = "grey50")
@@ -1179,3 +1290,62 @@ legend("topleft",
 mtext("Br international flows",
       outer = TRUE, cex = 1.05, font = 2)
 layout(1)  # reset layout so any later plots aren't stuck in 2x2
+
+# --- New plots: GDP growth, green capital level, green capital growth -------
+# Compute growth rates (period-over-period, expressed as %)
+gdp_gr_Br_pct  <- 100 * (y_Br[i_plot]  / y_Br[i_plot - 1]  - 1)
+gdp_gr_RoW_pct <- 100 * (y_RoW[i_plot] / y_RoW[i_plot - 1] - 1)
+kgr_gr_Br_pct  <- 100 * (k_gr_Br[i_plot]  / pmax(k_gr_Br[i_plot - 1], 1e-9)  - 1)
+kgr_gr_RoW_pct <- 100 * (k_gr_RoW[i_plot] / pmax(k_gr_RoW[i_plot - 1], 1e-9) - 1)
+
+old.par2 <- par(no.readonly = TRUE)
+layout(matrix(1:3, nrow = 3, ncol = 1, byrow = TRUE))
+par(mar = c(4, 4.5, 3, 1.5), cex.main = 1.0, font.main = 1)
+
+# Plot N+1: GDP growth rate Br vs RoW
+plot(periods, gdp_gr_Br_pct, type = "l", lwd = 2, col = "orange",
+     ylim = range(c(gdp_gr_Br_pct, gdp_gr_RoW_pct), na.rm = TRUE),
+     main = "GDP growth rate (year-over-year)",
+     xlab = "Period", ylab = "Growth rate (%)")
+add_guard_lines()
+lines(periods, gdp_gr_RoW_pct, lwd = 2, col = "forestgreen")
+abline(h = 0, lty = 2, col = "grey50")
+if (shock_fed) abline(v = t_shock_fed, lty = 3, col = "red")
+legend("topright",
+       legend = c("Br", "RoW", if (shock_fed) "Fed shock"),
+       col    = c("orange", "forestgreen", if (shock_fed) "red"),
+       lwd    = c(2, 2, if (shock_fed) 1),
+       lty    = c(1, 1, if (shock_fed) 3),
+       bty = "n", cex = 0.85)
+
+# Plot N+2: Br green capital level
+plot(periods, k_gr_Br[i_plot], type = "l", lwd = 2, col = "forestgreen",
+     main = "Br green capital stock",
+     xlab = "Period", ylab = "k_gr_Br (T USD)")
+add_guard_lines()
+if (shock_fed) abline(v = t_shock_fed, lty = 3, col = "red")
+legend("topleft",
+       legend = c("Br green capital", if (shock_fed) "Fed shock"),
+       col    = c("forestgreen", if (shock_fed) "red"),
+       lwd    = c(2, if (shock_fed) 1),
+       lty    = c(1, if (shock_fed) 3),
+       bty = "n", cex = 0.85)
+
+# Plot N+3: Green capital growth rate Br vs RoW
+plot(periods, kgr_gr_Br_pct, type = "l", lwd = 2, col = "orange",
+     ylim = range(c(kgr_gr_Br_pct, kgr_gr_RoW_pct), na.rm = TRUE),
+     main = "Green capital growth rate (year-over-year)",
+     xlab = "Period", ylab = "Growth rate (%)")
+add_guard_lines()
+lines(periods, kgr_gr_RoW_pct, lwd = 2, col = "forestgreen")
+abline(h = 0, lty = 2, col = "grey50")
+if (shock_fed) abline(v = t_shock_fed, lty = 3, col = "red")
+legend("topright",
+       legend = c("Br", "RoW", if (shock_fed) "Fed shock"),
+       col    = c("orange", "forestgreen", if (shock_fed) "red"),
+       lwd    = c(2, 2, if (shock_fed) 1),
+       lty    = c(1, 1, if (shock_fed) 3),
+       bty = "n", cex = 0.85)
+
+par(old.par2)
+layout(1)
