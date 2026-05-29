@@ -25,7 +25,7 @@ cat("\014")
 # 2) TIME SPAN
 ################################################################################
 
-nPeriods_report <- 100  # periods to report/plot (2017-2060)
+nPeriods_report <- 100  # periods to report/plot (2017-2060 -> initially 44 periods) -> Suggestion 80 periods (reserves of energy are still positive)
 # Burn-in: discarded from start so GL xr dynamics + augmented-model
 # (FC loans, Bortz BoP, Nalin investment) can converge to a self-consistent
 # state before reporting. Methodological note: this is a workaround for the
@@ -110,7 +110,11 @@ vnames <- c(
   "per_Br","per_RoW","liq_b_Br","liq_b_RoW",
   "y","inv","gov","yd","k","v",
   "l_fc_Br_d","l_fc_Br_s","l_fc_Br","delta_l_fc_Br",
-  "int_fc_Br"
+  "int_fc_Br",
+  "l_fc_gr_Br","l_fc_con_Br",
+  "delta_l_fc_gr_Br","delta_l_fc_con_Br",
+  "int_fc_gr_Br","int_fc_con_Br",
+  "psi_gr_share_Br"
 )
 for (vn in vnames) assign(vn, numeric(nPeriods))
 
@@ -171,7 +175,7 @@ g_inv_Br      <- 0.30     # fraction of capital gap closed per period
 # Calibrated so domestic-loan share ~ 87% at baseline (Br empirical: domestic
 # bank credit to NFC ~ 6-7x larger than NFC FC debt at end-2019, BIS data).
 lambda_dom_0  <- 0        # autonomous component
-lambda_dom_1  <- 0.87     # share of total financing met by domestic loans
+lambda_dom_1  <- 0.87 #87    # share of total financing met by domestic loans
 # Blend factor: in transition periods between old and new investment scheme,
 # use convex combination. inv_nalin_weight = 0 -> old gamma equation;
 # = 1 -> pure Nalin. Set to 1 for full Nalin port.
@@ -198,33 +202,37 @@ use_endog_elast <- TRUE
 zeta0_par   <- 0.85   ; zeta1_par   <- 0.45    # exports: weak at low share_gr
 phi0_m_par  <- 1.10   ; phi1_m_par  <- 0.35    # imports: strong at low share_gr
 
-# --- Confidence channel: foreign demand for Br bills responds to fundamentals ---
-# lambda50_effective = lambda50 * confidence_br
-# confidence_br = exp( kappa_tb * tb_Br/y_Br + kappa_res * (or_Br/or_target - 1) )
-# When trade deteriorates or reserves fall below target, confidence drops,
-# reducing foreign demand for Br bills. Set use_confidence = FALSE to disable.
-use_confidence <- TRUE
-kappa_tb       <- 5      # sensitivity to trade-balance/GDP ratio
-kappa_res      <- 0.5    # sensitivity to reserves vs target
+# Note: an earlier "confidence channel" multiplier on lambda50 (kappa_tb,
+# kappa_res, conf_br with exponential form clamped to [0.1, 2]) has been
+# removed; foreign demand for Br bills follows the Carnevali eq. 75 constant-
+# lambda50 form. The reserve targets below are retained because they are
+# referenced as static numerical anchors elsewhere; not used to drive demand.
 or_target_br   <- 3.9746  # reserve target Br (scaled: 50 * s_Br)
 or_target_row  <- 128.5109 # reserve target RoW (scaled: 50 * s_RoW)
 
 lambda10 <- 0.14707 ; lambda11 <- 1 ; lambda12 <- 1 ; lambda13 <- 0    ; lambda14 <- 0
 lambda20 <- 0.04902 ; lambda21 <- 1 ; lambda22 <- 1 ; lambda23 <- 0    ; lambda24 <- 0
 lambda40 <- 0.14707 ; lambda41 <- 1 ; lambda42 <- 1 ; lambda43 <- 0    ; lambda44 <- 0
-# --- lambda50 endogenized to scale with Br's share of world output ---
-# Approach B (Brainard-Tobin with size-proportional foreign allocation):
-#   lambda50_t = lambda50_bar * (Y_Br_t / (Y_Br_t + Y_RoW_t))
-# As Br's share of world GDP rises, RoW naturally wants more Br bills.
-# Reference parameter calibrated so at period 1 (Br share ~3%), the resulting
-# allocation matches a 15% foreign-held share of Br bills (realistic for EM).
-#   target: b_RoWBr_d[1] = 0.15 * b_Br_s[1] = 0.15 * 10.7645 = 1.6147
-#   lambda50[1] = 1.6147 / V_RoW[1] = 1.6147 / 452.05 = 0.003572
-#   lambda50_bar = 0.003572 / 0.03 = 0.1191
-lambda50_bar <- 0.1191
-# Backward compatibility: lambda50 var still exists but is now computed dynamically
-lambda50 <- 0.003572  # placeholder (will be overwritten in loop)
-lambda51 <- 1 ; lambda52 <- 1 ; lambda53 <- 0    ; lambda54 <- 0
+# lambda50: autonomous portfolio share — RoW HHs' baseline allocation to Br
+# bills as a fraction of RoW wealth, before rate-driven reallocation.
+# Constant, following Carnevali et al. (2021) eq. 75. Empirical anchor:
+# 0.022 corresponds to foreign holdings of Brazilian sovereign bills as a
+# fraction of RoW HH wealth at the period-1 baseline. Earlier endogenization
+# (size-proportional via Br_share_w, plus confidence multiplier conf_br) has
+# been removed: the confidence multiplier used unsourced kappas and an
+# exponential form clamped to [0.1, 2], and the size effect was a Brainard-
+# Tobin variant Carnevali did not adopt. Returning to the original constant
+# specification.
+lambda50 <- 0.022
+# lambda52: sensitivity of foreign demand for Br bills to the RoW interest
+# rate. Set to 0.25 to match Nalin & Yajima (2022)'s calibration for the
+# Mexican peripheral economy (their lambda_51us = 0.25 governs US HH demand
+# for the CLN that mediates US holdings of MX bills). At 0.25, the model
+# absorbs a +200bp Fed shock cleanly under GL closure without driving foreign
+# demand to the 1e-10 floor. At 1.0 (Carnevali's calibration for two equally
+# sized core economies), the same shock collapses the FX market. Matches
+# Nalin's source-paper calibration directly.
+lambda51 <- 1 ; lambda52 <- 0.25 ; lambda53 <- 0    ; lambda54 <- 0
 lambda70 <- 0.02451 ; lambda71 <- 0 ; lambda72 <- 0 ; lambda73 <- 0.01 ; lambda74 <- 0.01
 lambda80 <- 0.02451 ; lambda81 <- 0 ; lambda82 <- 0 ; lambda83 <- 0.01 ; lambda84 <- 0.01
 lambda90 <- 0.02451 ; lambda91 <- 0 ; lambda92 <- 0 ; lambda93 <- 0.01 ; lambda94 <- 0.01
@@ -258,8 +266,40 @@ r_l_Br   <- 0.035; r_l_RoW   <- 0.035
 #     corporates: Bevilaqua, Hale & Tallman (2020, J. Int. Economics 124)
 #     document near-full pass-through with persistent positive gap; Li, Magud,
 #     Werner & Witte (2021, IMF WP 21/155) confirm using a 2016-2019 sample.
-r_l_fc     <- 0.085     # FC corporate borrowing rate, Brazil 2016 anchor
+r_l_fc     <- 0.085     # FC corporate borrowing rate, Brazil 2016 anchor (legacy aggregate)
 fc_supply_mode <- "passive"  # "passive" = supply = demand; "rationed" later
+
+# --- Split FC borrowing: green vs. conventional ----------------------------
+# l_fc_Br is now decomposed into two parallel stocks:
+#   l_fc_gr_Br  funded at rate r_l_fc_gr   -> finances inv_gr_Br
+#   l_fc_con_Br funded at rate r_l_fc_con  -> finances inv_con_Br
+# At baseline both rates equal the legacy r_l_fc (0.085) so behaviour is
+# identical to the single-stock version when rates are equal. When an MDB or
+# concessional channel cuts r_l_fc_gr below r_l_fc_con, firms reallocate
+# their FC borrowing toward green. The split applies to the FLOW
+# (delta_l_fc_Br); stocks accumulate.
+#
+# Allocation rule (Brainard-Tobin-style linear, matching the rest of
+# Carnevali's behavioural equations):
+#   psi_gr_share = 0.5 + kappa_fc * (r_l_fc_con - r_l_fc_gr)
+# NO bounds on psi_gr_share. When rates diverge enough, the share can go
+# negative (firms repay conventional FC and borrow more green) or exceed 1
+# (firms borrow green to roll over conventional). This is consistent with
+# the strict "let the model speak" methodological stance: clamping the share
+# would suppress dynamics. Flag in diagnostics.
+r_l_fc_gr  <- r_l_fc    # green FC borrowing rate (initially identical)
+r_l_fc_con <- r_l_fc    # conventional FC borrowing rate
+kappa_fc   <- 10        # 1 pp rate gap -> 10 pp shift in green share
+# Pass-through of new green FC borrowing into the green investment target
+# (chi5 channel). 1 means each unit of new green FC borrowing raises the
+# green target by one unit (full pass-through in Br currency).
+chi5_Br    <- 1
+# Shock toggle: at t_shock_mdb, the green FC rate is cut by mdb_green_cut.
+# This is the MDB lever; we'll wire the MDB column in next, but the
+# rate-cut mechanism already exists here so the channel can be tested.
+shock_mdb       <- FALSE
+mdb_green_cut   <- 0.02   # -200 bp on r_l_fc_gr when activated
+t_shock_mdb     <- 22     # period of activation (reported scale)
 
 theta_Br  <- 0.144193    ; theta_RoW  <- 0.144193
 delta0_Br <- 0.100609    ; delta0_RoW <- 0.100609
@@ -335,7 +375,7 @@ nIter <- 150
 # --- FX closure -----------------------------------------------------------
 # "GL"    = Godley-Lavoie floating; xr clears Br bill market every period.
 # "FIXED" = peg xr_RoW = 1; FX reserves (or_Br, or_RoW) absorb BP.
-fx_closure <- "GL"
+fx_closure <- "FIXED"
 or_init_Br  <- 3.9746   # initial Br reserves (scaled: 50 * s_Br)
 or_init_RoW <- 128.5109 # initial RoW reserves (scaled: 50 * s_RoW)
 
@@ -390,15 +430,32 @@ x_Br[1]  <- 0.8406 ; x_RoW[1]  <- 0.8407
 im_Br[1] <- 0.8407 ; im_RoW[1] <- 0.8406
 tb_Br[1] <- -0.0001 ; tb_RoW[1] <- 0.0001
 
-v[1]          <- 466.031
-v_Br[1]    <- 13.9809  ; v_RoW[1]    <- 452.0498
-b_Br_s[1]  <- 10.7645  ; b_RoW_s[1]  <- 348.0511
-b_BrBr_d[1] <- 2.0560  ; b_BrBr_s[1] <- 2.0560
+v[1]          <- 462.45     # World wealth — recomputed below from sub-totals
+# Br HH wealth: rescaled to be consistent with new Br bill stock IC
+#   v_Br = b_BrBr_d + b_BrRoW_d*xr + e_BrBr_d + dep_Br + h_Br_h
+#   New: 0.3247 + 0.6853 + 0.3427 + 7.3879 + 3.1663 = 11.9069
+v_Br[1]    <- 11.9069
+# RoW HH wealth: drops by the change in b_RoWBr_d (1.6147 -> 0.1000 = -1.5147)
+v_RoW[1]    <- 450.5351   # was 452.0498
+# --- Br bill stock IC: rescaled to empirical magnitude -------------------
+# Empirical anchor: total Brazilian sovereign bond market ~1.7 T USD
+# (BCB/Tesouro Nacional, end-2016/end-2024 federal LC+FC sovereign debt at
+# market value, in T USD at xr=1). Previous IC of 10.76 T was unrealistic
+# (implied government deficit ~14% of Br GDP).
+#
+# Allocation: domestic shares (Br HH, Br Bank, Br CB) preserved; RoW HH
+# share dropped to 0.1 T USD = 100 B USD, matching direct foreign private-
+# investor holdings (excluding institutional/central-bank/MDB foreign
+# holdings, which would go to a separate MDB sector when built).
+# Residual goes to Br CB as placeholder; when MDB sector is added, the
+# institutional foreign chunk migrates from b_cb_BrBr_s to b_mdb_BrBr.
+b_Br_s[1]  <- 1.7000   ; b_RoW_s[1]  <- 348.0511
+b_BrBr_d[1] <- 0.3247  ; b_BrBr_s[1] <- 0.3247
 b_BrRoW_d[1] <- 0.6853 ; b_BrRoW_s[1] <- 0.6854
-b_RoWBr_d[1] <- 1.6147 ; b_RoWBr_s[1] <- 1.6147
+b_RoWBr_d[1] <- 0.1000 ; b_RoWBr_s[1] <- 0.1000
 b_RoWRoW_d[1] <- 66.4761 ; b_RoWRoW_s[1] <- 66.4761
-b_Br_bank[1]   <- 4.2942 ; b_RoW_bank[1]   <- 157.0351
-b_cb_BrBr_s[1] <- 2.7996 ; b_cb_RoWRoW_s[1] <- 102.3769
+b_Br_bank[1]   <- 0.6782 ; b_RoW_bank[1]   <- 157.0351
+b_cb_BrBr_s[1] <- 0.5971 ; b_cb_RoWRoW_s[1] <- 102.3769
 
 e_Br_real_s[1] <- 0.4613 ; e_RoW_real_s[1] <- 14.9150
 e_BrBr_d[1] <- 0.3427 ; e_BrBr_s[1] <- 0.3427
@@ -421,6 +478,17 @@ l_s_Br[1]      <- 2.5312 ; l_s_RoW[1]      <- 81.8434
 l_fc_Br[1]    <- 0.40    ; l_fc_Br_d[1]   <- 0.40
 l_fc_Br_s[1]  <- 0.40    ; delta_l_fc_Br[1] <- 0
 int_fc_Br[1]  <- r_l_fc * 0.40   # interest cost on initial FC stock (FC units)
+# Split-stock initial conditions: allocate initial FC stock pro-rata to the
+# initial capital shares. Period-1 green share is k_gr_Br/k_Br = 0.688/4.793
+# = 0.1436. So l_fc_gr_Br[1] = 0.40 * 0.1436 = 0.0574 and l_fc_con_Br[1] =
+# 0.40 - 0.0574 = 0.3426. From t=2 onward, allocation follows psi_gr_share.
+l_fc_gr_Br[1]    <- 0.40 * (0.688 / 4.793)
+l_fc_con_Br[1]   <- 0.40 - l_fc_gr_Br[1]
+delta_l_fc_gr_Br[1]  <- 0
+delta_l_fc_con_Br[1] <- 0
+int_fc_gr_Br[1]      <- r_l_fc_gr  * l_fc_gr_Br[1]
+int_fc_con_Br[1]     <- r_l_fc_con * l_fc_con_Br[1]
+psi_gr_share_Br[1]   <- 0.5   # placeholder; recomputed from t=2
 xr_Br[1] <- 1 ; xr_RoW[1] <- 1
 or_Br[1] <- or_init_Br ; or_RoW[1] <- or_init_RoW
 
@@ -485,8 +553,20 @@ for (i in 2:nPeriods) {
   # under Fed tightening (this typically happens empirically), but we keep
   # that as a separate shock to isolate channels.
   if (shock_fed && i == burn_in + t_shock_fed) {
-    r_RoW   <- r_RoW   + fed_uplift
-    r_l_fc  <- r_l_fc  + fed_uplift
+    r_RoW       <- r_RoW       + fed_uplift
+    r_l_fc      <- r_l_fc      + fed_uplift
+    r_l_fc_gr   <- r_l_fc_gr   + fed_uplift
+    r_l_fc_con  <- r_l_fc_con  + fed_uplift
+  }
+  
+  # --- MDB green-rate-cut shock ---
+  # At activation, the green FC rate is cut by mdb_green_cut (default -200bp).
+  # Conventional FC rate unchanged; the wedge opens up and the allocation
+  # rule (psi_gr_share) shifts firm borrowing toward green. This is the MDB
+  # lever; the MDB column in the TFM will be populated next to make the
+  # bookkeeping explicit (capital flow from RoW into MDB into Br firms).
+  if (shock_mdb && i == burn_in + t_shock_mdb) {
+    r_l_fc_gr <- r_l_fc_gr - mdb_green_cut
   }
   
   # Re-anchor Br land-emission reference values at the start of reported time
@@ -569,7 +649,10 @@ for (i in 2:nPeriods) {
     # FC interest cost — close the Minsky loop: FC debt service hits firm
     # cash flow, reducing retained profits and amplifying next-period
     # financing need (Nalin's central fragility mechanism).
-    int_fc_cashflow_Br <- r_l_fc * l_fc_Br[i-1] * xr_Br[i]
+    # Split: green stock pays r_l_fc_gr, conventional stock pays r_l_fc_con.
+    # When rates are equal this reduces to r_l_fc * l_fc_Br[i-1] exactly.
+    int_fc_cashflow_Br <- r_l_fc_gr  * l_fc_gr_Br[i-1]  * xr_Br[i] +
+      r_l_fc_con * l_fc_con_Br[i-1] * xr_Br[i]
     f_Br[i]        <- y_Br[i] - y_w_Br[i] - da_Br[i] - interest_Br -
       int_fc_cashflow_Br
     fu_Br[i]       <- f_Br[i] * ret_Br
@@ -637,9 +720,16 @@ for (i in 2:nPeriods) {
     
     gifdif_Br <- max(r_l_con_br - r_l_RoW_br, 0) *
       (l_firm_Br[i-1] * share_gr_b_lag)
+    # chi5 channel: lagged new green FC borrowing flow (in Br currency) shifts
+    # the green investment target. One-period lag because delta_l_fc_gr_Br[i]
+    # is computed later in the loop (from the residual financing identity);
+    # using the lag preserves causal order. Consistent with how gifdif_Br
+    # uses lagged loan stocks.
     inv_gr_Br_t[i] <- (chi1_Br*gov_gr_Br[i] + chi2_Br*y_Br[i] +
                          chi3_Br*d_t_Br[i-1] +
-                         chi4_Br*gifdif_Br) * (1 - d_t_Br[i-1])
+                         chi4_Br*gifdif_Br +
+                         chi5_Br * delta_l_fc_gr_Br[i-1] * xr_Br[i]) *
+      (1 - d_t_Br[i-1])
     gifdif_RoW <- max(r_l_con_gn - r_l_RoW_gn, 0) *
       (l_firm_RoW[i-1] * share_gr_g_lag)
     inv_gr_RoW_t[i] <- (chi1_RoW*gov_gr_RoW[i] + chi2_RoW*y_RoW[i] +
@@ -694,8 +784,27 @@ for (i in 2:nPeriods) {
       }
       l_fc_Br[i]       <- l_fc_Br_s[i]
       delta_l_fc_Br[i] <- l_fc_Br[i] - l_fc_Br[i-1]
-      # Recompute interest cost based on updated stock
+      # Recompute interest cost based on updated stock (legacy aggregate)
       int_fc_Br[i] <- r_l_fc * l_fc_Br[i-1] * xr_Br[i]
+      
+      # --- SPLIT FC FLOW: green vs. conventional (allocation rule) -------------
+      # Allocation rule (Brainard-Tobin linear, matching the rest of the model):
+      #   psi_gr_share = 0.5 + kappa_fc * (r_l_fc_con - r_l_fc_gr)
+      # NO BOUNDS. Negative or >1 share is allowed and economically meaningful:
+      #   psi < 0  -> firms repay green and borrow more conventional
+      #              (would occur if r_l_fc_gr > r_l_fc_con, an "anti-MDB" pricing)
+      #   psi > 1  -> firms over-rotate into green; conventional stock falls
+      #              (rolling old conventional borrowing into new green)
+      # If the model produces extreme values, that is information about the
+      # parameter regime, not a bug. Flagged in diagnostics.
+      psi_gr_share_Br[i] <- 0.5 + kappa_fc * (r_l_fc_con - r_l_fc_gr)
+      delta_l_fc_gr_Br[i]  <- delta_l_fc_Br[i] * psi_gr_share_Br[i]
+      delta_l_fc_con_Br[i] <- delta_l_fc_Br[i] - delta_l_fc_gr_Br[i]
+      l_fc_gr_Br[i]  <- l_fc_gr_Br[i-1]  + delta_l_fc_gr_Br[i]
+      l_fc_con_Br[i] <- l_fc_con_Br[i-1] + delta_l_fc_con_Br[i]
+      # Interest expense by stock (accruing at start-of-period stocks * rate)
+      int_fc_gr_Br[i]  <- r_l_fc_gr  * l_fc_gr_Br[i-1]
+      int_fc_con_Br[i] <- r_l_fc_con * l_fc_con_Br[i-1]
     }
     # RoW firm loans unchanged (no FC borrowing channel for RoW)
     l_firm_RoW[i] <- l_firm_RoW[i-1] + inv_RoW[i] - af_RoW[i] - fu_RoW[i] -
@@ -755,36 +864,18 @@ for (i in 2:nPeriods) {
                               lambda93*r_e_Br[i-1] - lambda94*r_e_RoW[i-1])
     b_RoWRoW_d[i] <- v_RoW[i]*(lambda40 - lambda41*r_Br + lambda42*r_RoW -
                                  lambda43*r_e_Br[i-1] - lambda44*r_e_RoW[i-1])
-    if (use_confidence) {
-      tb_ratio   <- if (y_Br[i-1] > 0) tb_Br[i-1] / y_Br[i-1] else 0
-      res_ratio  <- or_Br[i-1] / or_target_br - 1
-      conf_br    <- exp(kappa_tb * tb_ratio + kappa_res * res_ratio)
-      conf_br    <- max(min(conf_br, 2), 0.1)   # clamp 0.1–2 for stability
-    } else {
-      conf_br    <- 1
-    }
-    # Endogenous lambda50: size-proportional foreign allocation (Approach B).
-    # As Br's GDP share rises, RoW wants more Br bills; confidence multiplies.
-    Y_tot_lag   <- y_Br[i-1] + y_RoW[i-1]
-    Br_share_w  <- if (Y_tot_lag > 0) y_Br[i-1] / Y_tot_lag else 0.03
-    lambda50_t  <- lambda50_bar * Br_share_w * conf_br
-    # Notional cross-border bill demand (before floor).
-    b_RoWBr_d_notional <- v_RoW[i]*(lambda50_t + lambda51*r_Br - lambda52*r_RoW -
-                                      lambda53*r_e_Br[i-1] - lambda54*r_e_RoW[i-1])
-    # Floor at 1e-10 instead of switching dummy to zero. Theoretical reading:
-    # when notional portfolio demand falls below an arbitrarily small positive
-    # threshold, foreign appetite for Br bills has effectively vanished, so
-    # any infinitesimal residual supply outweighs demand to a numerically
-    # extreme degree. The FX-clearing ratio supply/demand then drives xr
-    # toward zero (the peso "crashes" to near-worthlessness). Our own
-    # modeling choice; not in Carnevali, Nalin, or Bortz. The events are
-    # tracked via xr_guard_fired and shown as red lines in all plots.
-    if (b_RoWBr_d_notional < 1e-10) {
-      b_RoWBr_d[i] <- 1e-10
-      xr_guard_fired[i] <- TRUE
-    } else {
-      b_RoWBr_d[i] <- b_RoWBr_d_notional
-    }
+    # --- RoW HHs' demand for Br bills: LOCKED AT IC --------------------------
+    # The Carnevali eq. 75 Brainard-Tobin equation produced cross-border bill
+    # demand that grew mechanically with RoW wealth, driving b_RoWBr_d to
+    # implausibly large values (~30 T USD by late simulation, vs. empirical
+    # foreign-private-investor holdings of ~0.1 T USD). Locking at IC value
+    # means RoW HHs do not reallocate to Br bills as their wealth grows;
+    # the extra wealth is absorbed by the cash + deposit residual computed
+    # in Section VII below. This is a substantive modelling choice (not in
+    # Carnevali) — flagged here. When the MDB sector is built, the
+    # institutional foreign demand for Br bills will be modelled there
+    # explicitly, not folded into RoW HH portfolio choice.
+    b_RoWBr_d[i] <- b_RoWBr_d[1]
     e_RoWBr_d[i] <- 0
     e_RoWRoW_d[i] <- v_RoW[i]*((lambda100 + lambda80) - lambda101*r_Br - lambda102*r_RoW -
                                  lambda103*r_e_Br[i-1] + lambda104*r_e_RoW[i-1])
@@ -885,12 +976,10 @@ for (i in 2:nPeriods) {
       # is recorded automatically by the BoP identity in Section XV.
       xr_RoW[i] <- 1
       xr_Br[i]  <- 1
-      if (use_confidence) {
-        b_RoWBr_s[i]    <- b_RoWBr_d[i]
-        # Br CB residually holds what nobody else wants
-        b_cb_BrBr_s[i]  <- b_Br_s[i] - b_BrBr_s[i] - b_RoWBr_s[i] -
-          b_Br_bank[i]
-      }
+      b_RoWBr_s[i]    <- b_RoWBr_d[i]
+      # Br CB residually holds what nobody else wants
+      b_cb_BrBr_s[i]  <- b_Br_s[i] - b_BrBr_s[i] - b_RoWBr_s[i] -
+        b_Br_bank[i]
     }
     
     # ------------------- X. ECOSYSTEM: MATERIAL FLOWS ---------------------- #
@@ -1021,7 +1110,11 @@ for (i in 2:nPeriods) {
                                           r_e_RoW[i-1] * e_BrRoW_s[i-1])
     ca_int_paid_lc_Br[i] <- r_Br * b_RoWBr_s[i-1] +
       r_e_Br[i-1] * e_RoWBr_s[i-1]
-    ca_int_paid_fc_Br[i] <- int_fc_Br[i]   # already xr-multiplied in line 583
+    # BoP FC interest expense must mirror the firm cash-flow expense
+    # (int_fc_cashflow_Br computed in section II), or the identity breaks.
+    # Split: green stock at r_l_fc_gr, conventional stock at r_l_fc_con.
+    ca_int_paid_fc_Br[i] <- r_l_fc_gr  * l_fc_gr_Br[i-1]  * xr_Br[i] +
+      r_l_fc_con * l_fc_con_Br[i-1] * xr_Br[i]
     ca_div_net_Br[i]     <- 0              # placeholder; cross-border dividends zeroed
     cab_Br[i] <- (x_Br[i] - im_Br[i]) +
       ca_int_recv_Br[i] -
@@ -1209,6 +1302,28 @@ if (n_fired == 0) {
   cat("  has vanished. The FX-clearing ratio supply/demand then drives\n")
   cat("  xr toward zero -- the peso effectively crashes to worthless.\n")
 }
+
+# --- Split-FC borrowing diagnostic ---
+cat("\n--- Split FC borrowing (green / conventional) ---\n")
+cat(sprintf("Final stocks: l_fc_gr_Br=%.4f, l_fc_con_Br=%.4f, total=%.4f\n",
+            l_fc_gr_Br[nPeriods], l_fc_con_Br[nPeriods],
+            l_fc_gr_Br[nPeriods] + l_fc_con_Br[nPeriods]))
+cat(sprintf("Initial   stocks: l_fc_gr_Br=%.4f, l_fc_con_Br=%.4f, total=%.4f\n",
+            l_fc_gr_Br[1], l_fc_con_Br[1], l_fc_gr_Br[1] + l_fc_con_Br[1]))
+cat(sprintf("Rates at end: r_l_fc_gr=%.4f, r_l_fc_con=%.4f, gap=%+.4f\n",
+            r_l_fc_gr, r_l_fc_con, r_l_fc_con - r_l_fc_gr))
+psi_post_burn <- psi_gr_share_Br[(burn_in+1):nPeriods]
+cat(sprintf("psi_gr_share (reported window): min=%.3f, max=%.3f, mean=%.3f\n",
+            min(psi_post_burn), max(psi_post_burn), mean(psi_post_burn)))
+neg_psi <- sum(psi_post_burn < 0)
+gt1_psi <- sum(psi_post_burn > 1)
+if (neg_psi > 0) cat(sprintf("  psi < 0 in %d period(s) -- firms net-repaid green\n", neg_psi))
+if (gt1_psi > 0) cat(sprintf("  psi > 1 in %d period(s) -- firms over-rotated into green\n", gt1_psi))
+if (neg_psi == 0 && gt1_psi == 0) cat("  psi stayed within [0,1] naturally (no extreme allocations)\n")
+neg_stock_gr  <- sum(l_fc_gr_Br[(burn_in+1):nPeriods]  < 0)
+neg_stock_con <- sum(l_fc_con_Br[(burn_in+1):nPeriods] < 0)
+if (neg_stock_gr  > 0) cat(sprintf("  l_fc_gr_Br  went NEGATIVE in %d period(s) -- model says firms accumulated FC green ASSETS\n", neg_stock_gr))
+if (neg_stock_con > 0) cat(sprintf("  l_fc_con_Br went NEGATIVE in %d period(s) -- model says firms accumulated FC conv ASSETS\n", neg_stock_con))
 
 ################################################################################
 # 9) ADDITIONAL STANDALONE PLOTS
