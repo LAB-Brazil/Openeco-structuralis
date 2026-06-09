@@ -22,8 +22,6 @@
 #       Treasury via f_cb_Br, holding CB net worth ~constant.
 # ---------------------------------------------------------------------------
 #
-# To run Scenario 5 (RoW-only RoW MOIS from 2025): set run_s5 = TRUE
-#
 ################################################################################
 
 # 1) CLEAR ALL ------------------------------------------------------------------
@@ -39,10 +37,6 @@ cat("\014")
 # entirely by the behavioral equations. Shocks are applied at absolute periods
 # inside the loop (see the shock blocks), in the style of G&L/Passarella.
 nPeriods <- 100  # periods to simulate and report
-
-run_s5    <- FALSE
-s5_start  <- 9             # absolute period at which Scenario 5 activates
-s5_uplift <- 0.5
 
 ################################################################################
 # 3) ALLOCATE MODEL VARIABLES
@@ -99,13 +93,12 @@ vnames <- c(
   "bop_resid_Br",
   "cb_nw_Br","cb_nw_RoW",                          # implied CB net worth diagnostics (V_cba; Fed gap)
   "br_bill_resid","row_bill_resid",                # redundant bill-market checks (Bortz 71a; US-bill)
-  "gnp_Br","gnp_RoW","xr_Br","xr_RoW",
+  "xr_Br","xr_RoW",
   "y_mat_Br","y_mat_RoW","mat_Br","mat_RoW",
   "rec_Br","rec_RoW","dis_Br","dis_RoW",
   "dc_Br","dc_RoW","k_se_Br","k_se_RoW","wa_Br","wa_RoW",
   "k_m_Br","k_m_RoW","k_m","conv_m_Br","conv_m_RoW",
   "res_m_Br","res_m_RoW","res_m",
-  "cen_Br","cen_RoW","o2_Br","o2_RoW",
   "e_Br","e_RoW","er_Br","er_RoW","en_Br","en_RoW",
   "ed_Br","ed_RoW",
   "k_e_Br","k_e_RoW","k_e","conv_e_Br","conv_e_RoW",
@@ -120,7 +113,7 @@ vnames <- c(
   "q_Br","q_RoW","lev_f_Br","lev_f_RoW",
   "q_nalin_Br","k_target_Br",
   "inv_d_Br","K_target_Br","lcd_Br","ldom_Br","fc_residual_Br",
-  "per_Br","per_RoW","liq_b_Br","liq_b_RoW",
+  "liq_b_Br","liq_b_RoW",
   "y",
   "l_fc_Br_d","l_fc_Br_s","l_fc_Br","delta_l_fc_Br",
   "int_fc_Br",
@@ -139,6 +132,7 @@ vnames <- c(
   "b_RoW_MDB",                                 # MDB holdings of RoW bills (FC asset; the carry/safe asset)
   "b_Br_MDB",                                  # MDB holdings of Br bills (LC asset; residual BRL buffer)
   "l_lc_MDB",                                  # MDB loans to Br banks, in LC (BRL asset)
+  "green_loan_pool",                           # Brazil's demand for MDB concessional (green) loans, BRL (drives MDB issuance, 1-period lag)
   "Bond_MDB_s","Bond_MDB_d",                   # MDB bonds: issued (s) / held by RoW HH (d); FC liability
   "Bond_LC_MDB_s","Bond_LC_MDB_d",             # MDB BRL bonds: issued (s) / held by Br HH (d); BRL liability
   "int_bond_LC_MDB",                           # BRL-bond coupon paid by MDB to Br HH (BRL flow)
@@ -170,12 +164,13 @@ chi3_Br <- 30 * 0.07949   ; chi3_RoW <- 30 * 2.5703
 
 # --- Green Investment Finance differential (GIFdif) channel ----------------
 chi4_Br      <- 0.2 ; chi4_RoW      <- 0.2
-# Bueno-Kesse relative-rate sensitivity (Channel 1 price channel). Replaces the
-# gifdif level-term with the relative-rate form chi4 * I2C * (1 - mu) * pool,
+# Bueno-Kesse relative-rate sensitivity (Channel 1 price channel): desired green
+# investment takes the relative-rate form chi4 * I2C * (1 - mu) * pool,
 # where mu = effective green rate / conventional rate (= r_l_RoW_br / r_l_Br).
 # At mu = 1 (no MDB markdown) the term is 0, so the no-policy baseline is
 # unchanged; as the markdown deepens (mu falls) it raises desired green inv.
 bk_i2_Br     <- 1.0
+bk_sens_Br   <- 2.0   # sensitivity of the green/conventional split to the MDB rate gap (1 - mu); placeholder, calibrate after
 # --- Kaldor-Verdoorn productivity loop (Carnevali et al. 2021 mechanism; green/
 #     conventional application is this model's adaptation, as for the elasticities) ---
 # Per-type productivity GROWTH = verdoorn_coef * that type's CAPITAL-stock growth.
@@ -205,6 +200,7 @@ k1_Br <- 0.20   # Q feedback strength; moderate Minsky channel
 
 # --- Nalin investment-financing parameters ---------------------------------
 g_inv_Br      <- 0.30     # fraction of capital gap closed per period
+Ia_Br         <- 0.25     # autonomous (constant) investment desire [experimental]
 lambda_dom_0  <- 0        # autonomous component
 lambda_dom_1  <- 0.87 #87    # share of total financing met by domestic loans
 inv_nalin_weight <- 1.0
@@ -226,7 +222,7 @@ use_endog_elast <- TRUE
 ky_base_el  <- 1.67          # reference (baseline) K/Y, = k0_Br
 eps_base_el <- 0.922         # export income elasticity at baseline K/Y (prior baseline)
 eta_base_el <- 1.044         # import income elasticity at baseline K/Y (prior baseline)
-ky_cross_el <- 2.00          # K/Y at which eps = eta (Thirlwall balance) -- KEY CALIBRATION
+ky_cross_el <- 1.74          # K/Y at which eps = eta (Thirlwall balance) -- KEY CALIBRATION
 sens_ratio  <- 0.45 / 0.35   # S&S export:import sensitivity ratio (preserved)
 # solve slopes so the crossover lands exactly at ky_cross_el, keeping sens_ratio
 phi1_m_par <- (eta_base_el - eps_base_el) /
@@ -258,7 +254,11 @@ r_a_Br     <- r_Br * (1 + upsilon_Br)  # = 0.011 (bill rate + advances penalty)
 
 # --- Foreign-currency loans to Br firms (from RoW banks) -------------------
 r_l_fc     <- 0.085     # FC corporate borrowing rate, Brazil 2016 anchor (legacy aggregate)
-fc_supply_mode <- "passive"  # "passive" = supply = demand; "rationed" later
+# Capital-controls toggle: when FALSE, Br firms cannot borrow abroad in FC (the
+# financing gap is met entirely by domestic loans, l_fc_Br -> 0). TRUE reproduces
+# the open-account baseline. Used to make the capital-controls argument: it severs
+# the FC income drain that keeps the BoP in deficit despite a trade surplus.
+fc_loans_on <- TRUE
 
 # --- Split FC borrowing: green vs. conventional ----------------------------
 r_l_fc_gr  <- r_l_fc    # green FC borrowing rate (initially identical)
@@ -268,7 +268,7 @@ chi5_Br    <- 1
 
 # --- MDB sector parameters --------------------------------------------------
 # The MDB is a permanent sector. The policy lever is the capitalization
-# cap_MDB (size cap_mdb_amt, timing cap_mdb_start, profile cap_mdb_mode). With
+# cap_MDB (size cap_mdb_amt, one-shot at period cap_mdb_start). With
 # cap_mdb_amt = 0 the sector stays dormant (every stock is zero) and the model
 # reproduces the no-MDB economy exactly; there is no separate on/off flag.
 # Structure:
@@ -282,15 +282,18 @@ chi5_Br    <- 1
 #    interest is a clean BRL flow (no xr). MDB holds the FX mismatch.
 #  - The concessional loan marks down the green LC rate via mdb_subsidy_br
 #    (endogenous to l_lc_MDB through the phi-blend in the loop).
-cap_mdb_mode  <- "flow"   # "flow" (constant per-period capitalization) or "oneshot"
+#  - capitalization is a one-shot injection of cap_mdb_amt at period cap_mdb_start.
 cap_mdb_amt   <- 0        # capitalization amount (FC); 0 = dormant baseline
 cap_mdb_start <- 22       # period capitalization begins (or the one-shot date)
-# Payout shares (Option B, coupon-based): each book pays a coupon to its
-# bondholders and RETAINS the rest, which grows its bill holding and (lagged)
-# supports a larger bond issuance next period -- the MDB self-finances and grows
-# more independent of the one-shot capitalization over time. Mirror: same on both.
-lambda_fc     <- 0.8      # FC book: bonds = lambda_fc * b_RoW_MDB(-1); retains (1-lambda_fc) of RoW-bill interest
-lambda_lc     <- 0.8      # LC book: BRL bonds = lambda_lc * b_Br_MDB(-1); retains its concessional loan spread + (1-lambda_lc) of bill interest
+# Funding mix (endogenous tilt + self-sustaining FC cap): the FC/LC split is no
+# longer fixed. The MDB funds the concessional-loan demand from whichever book is
+# larger (psi_lc, the LC book's share of its total book). Since the LC book has
+# positive carry and grows while the FC cushion lags, psi_lc rises and the mix
+# migrates FC -> BRL over time, shrinking the MDB's FX mismatch toward zero. The FC
+# piece is capped at a fraction lambda_fc_cap (<1) of the cushion, so its coupon can
+# never exceed the cushion's interest: the FC book stays self-sustaining and cannot
+# drain. The LC piece is the residual, so the loan demand is always fully funded.
+lambda_fc_cap <- 0.5      # max fraction of the FC cushion the FC bond may lend against (<1 -> FC book self-sustaining; tight = cushion grows fast)
 r_l_LC_MDB    <- 0.02     # concessional LC rate on MDB loans to Br banks (placeholder, < r_l_Br)
 r_MDB         <- r_RoW    # MDB bond coupon = RoW bill rate (RoW HH indifferent)
 omega_mdb     <- 0.005    # bank intermediation spread on the MDB-funded green slice (a few bp).
@@ -316,7 +319,6 @@ rho_Br     <- 0.2     ; rho_RoW     <- 0.28
 sigma_m_Br <- 0.00034 ; sigma_m_RoW <- 0.00034
 sigma_e_Br <- 0.00177 ; sigma_e_RoW <- 0.00177
 zeta_Br    <- 0.015   ; zeta_RoW    <- 0.015
-car           <- 3.67
 
 co2_at_pre <- 2156.2
 phi11 <- 0.9817 ; phi12 <- 0.0183 ; phi21 <- 0.0080
@@ -338,8 +340,8 @@ psi_land       <- 1.0    # sensitivity dial for land emissions (default 1)
 emis_l_Br_0    <- 1.004  # Br land emissions 2016 (Agric 567 + LULUCF 437 kt)
 emis_l_RoW_0   <- 2.491  # RoW land emissions = global 3.495 - Br 1.004
 
-g_beta_Br <- 0.01  #original from Carnevali 0.02
-g_beta_RoW <- 0.02  #original from Carnevali 0.04
+g_beta_Br <- 0.01
+g_beta_RoW <- 0.02
 greening_starts <- 4
 beta0_base_Br  <- 0.27444   # 3.4524 * s_Br
 beta0_base_RoW <- 8.87342   # 3.4524 * s_RoW
@@ -353,16 +355,63 @@ prod_emis_scale_Br <- 0.31620
 
 nIter <- 150
 
+# ===========================================================================
+# EXCHANGE-RATE CONVENTION  (read before touching anything that uses xr)
+# ---------------------------------------------------------------------------
+# There is ONE quote in this model, used identically by the trade block and the
+# balance-sheet block. Stated once, plainly:
+#
+#   xr_Br = REAIS PER DOLLAR = how many reais it takes to buy ONE US dollar.
+#
+#   * xr_Br = 1 at the baseline peg (one real buys one dollar).
+#   * HIGHER xr_Br (e.g. 1.5): it now takes MORE reais to buy a dollar.
+#         -> the REAL has DEPRECIATED (the real is WEAKER, worth FEWER dollars);
+#            equivalently the DOLLAR has APPRECIATED (worth MORE reais).
+#   * LOWER  xr_Br (e.g. 0.5): it now takes FEWER reais to buy a dollar.
+#         -> the REAL has APPRECIATED (the real is STRONGER, worth MORE dollars);
+#            this is the OVERVALUATION case. The DOLLAR has depreciated.
+#
+#   xr_RoW = DOLLARS PER REAL = 1 / xr_Br (the same rate seen from the US side,
+#   the dollar price of one real). It moves OPPOSITE to xr_Br: when the real
+#   weakens (xr_Br up), xr_RoW falls. At the peg xr_RoW = xr_Br = 1.
+#
+# What a DEPRECIATION (xr_Br UP) does, now consistently in BOTH blocks:
+#   - Trade: Brazilian goods are cheaper abroad -> exports RISE, imports FALL
+#     (the +eps1 / -mu1 signs in the trade block). Overvaluation (xr_Br DOWN) is
+#     the opposite and is the New-Developmentalist competitiveness loss.
+#   - Balance sheet: the reais value of the DOLLAR-denominated FC debt
+#     (l_fc_Br * xr_Br) RISES, a heavier burden (original sin); the reais value
+#     of the dollar ASSETS Brazil holds also rises (the cg_* capital gains).
+#   So one move (xr_Br up = depreciation) is at once a competitiveness gain AND a
+#   heavier dollar-debt burden: the contractionary-depreciation tension.
+# ===========================================================================
+
 # --- FX closure: single Bortz (2014) fixed exchange rate peg ---------------
 # Peg xr_RoW = xr_Br = 1 (Bortz 73uFX/73a). Br CB reserves = its stock of RoW
 # (US) bills, cumulated from the balance of payments (Bortz 76a / KABOSA: the
 # official-settlement item). The US-bill market clears on the Fed (residual);
 # the BRL-bill market clears on the Br CB (residual, Bortz 71a). No toggle.
 
-# --- Shock toggles --------------------------------------------------------
-shock_fed     <- FALSE
-fed_uplift    <- 0.02     # +200 bp on RoW base rate
-t_shock_fed   <- 22       # period at which the shock hits (reported scale)
+# --- Exogenous exchange-rate (re-peg) shock --------------------------------
+# Independent of the MDB / capital-controls / baseline settings: a one-off,
+# PERMANENT re-peg of the BRL at period xr_shock_start. xr_Br is the BRL/USD
+# peg (1 = baseline), xr_RoW = 1/xr_Br its mirror. xr_shock_delta > 0 is a
+# depreciation (more reais per dollar), < 0 an appreciation. The revaluation of
+# cross-border holdings is booked through the cg_* terms, so the re-peg is
+# stock-flow consistent. Off by default; set xr_shock_on <- TRUE and choose the
+# sign of xr_shock_delta to run the up / down scenarios.
+xr_shock_on    <- FALSE   # master toggle (orthogonal to every other switch)
+xr_shock_start <- 40      # period the re-peg occurs (permanent thereafter)
+xr_shock_delta <- 0.5     # change in the BRL/USD peg: +0.5 -> 1.5 (deprec.), -0.5 -> 0.5 (apprec.)
+
+# --- Exogenous external-demand shock: RoW cuts its imports -----------------
+# Independent of every other toggle. In this two-country model RoW's imports ARE
+# Brazil's exports (im_RoW = x_Br * xr_RoW), so a fall in RoW import demand is a
+# permanent fractional cut to Brazil's exports x_Br from rowimp_shock_start: a
+# global / commodity demand shock to the periphery's export market. Off by default.
+rowimp_shock_on    <- FALSE   # master toggle (orthogonal to the xr and capital-controls switches)
+rowimp_shock_start <- 40      # period the import fall begins (permanent thereafter)
+rowimp_shock_size  <- 0.2     # fractional fall in RoW imports (= Br exports): 0.2 = a 20% drop
 
 ################################################################################
 # 5) INITIAL CONDITIONS (period 1)
@@ -591,8 +640,6 @@ cab_Br[1] <- 0.0063118231783399
 cab_RoW[1] <- -0.0063118231783399
 cb_nw_Br[1] <- 2.02434326350916
 cb_nw_RoW[1] <- 40.6506300330351
-cen_Br[1] <- 0.1860870279
-cen_RoW[1] <- 8.33577439544721
 cg_b_Br[1] <- 0
 cg_b_RoW[1] <- 0
 cg_e_Br[1] <- 0
@@ -675,8 +722,6 @@ fd_Br[1] <- 0.705986370788939
 fd_RoW[1] <- 18.6795816208822
 fu_Br[1] <- 0.0224781297669508
 fu_RoW[1] <- 0.772970439980035
-gnp_Br[1] <- 0
-gnp_RoW[1] <- 0
 gov_con_Br[1] <- 0.722338322228999
 gov_con_RoW[1] <- 23.3690785963047
 gov_gr_Br[1] <- 0.0795
@@ -701,13 +746,22 @@ inv_gr_Br_t[1] <- 0.12376534865503
 inv_gr_RoW[1] <- 4.01158129351948
 inv_gr_RoW_t[1] <- 4.01158129351948
 inv_RoW[1] <- 26.5630945925723
-k_Br[1] <- 6.39563587763678
-k_con_Br[1] <- 5.33674420668374
+# --- Brazil capital placed on the leveraged Tobin-Q target it actually pursues ---
+# k_Br[1] is set to K_target[2], the fixed point of
+#   k = (k0_Br + k1_Br*(l_firm_Br[1] + l_fc_Br[1]*xr_Br + l_lc_MDB[1])/k) * y_Br[1],
+# i.e. the leveraged target ratio K/Y = 1.7295 (vs the unleveraged k0_Br = 1.67,
+# which left a t=2 accelerator gap). The extra capital is a real asset with no
+# financial counterpart, so it is absorbed entirely by firm net worth -- no other
+# sector's balance sheet moves and the SFC audit still closes. k_con_Br[1] and
+# k_gr_Br[1] are scaled by the same factor so that k_Br = k_gr + k_con holds and
+# the baseline green capital ratio (k_gr/k_con = 0.1984) is preserved.
+k_Br[1] <- 6.6570352282119
+k_con_Br[1] <- 5.5548650466600
 k_con_RoW[1] <- 208.666457092421
 k_e[1] <- 78973.9316641407
 k_e_Br[1] <- 1962.39256961085
 k_e_RoW[1] <- 77011.5390945299
-k_gr_Br[1] <- 1.05889167095304
+k_gr_Br[1] <- 1.1021701815519
 # Kaldor-Verdoorn productivity indices start at 1 in both countries, so the
 # q_C/q_D ratio is exactly 1 at t=1 and the productivity loop is INERT until
 # green and conventional capital growth diverge (no baseline effect).
@@ -751,8 +805,6 @@ nafa_Br[1] <- 0.46732286870359
 nafa_RoW[1] <- 15.4394394486898
 p_e_Br[1] <- 7.83801759707076
 p_e_RoW[1] <- 4.34701376094529
-per_Br[1] <- 0
-per_RoW[1] <- 0
 psbr_Br[1] <- 0.46101104552525
 psbr_RoW[1] <- 15.4457512718682
 psi_gr_share_Br[1] <- 0.5
@@ -815,13 +867,6 @@ emis_RoW_total[1] <- emis_RoW[1] + emis_l_RoW[1]
 xr_guard_fired <- logical(nPeriods)
 
 for (i in 2:nPeriods) {
-  
-  if (shock_fed && i == t_shock_fed) {
-    r_RoW       <- r_RoW       + fed_uplift
-    r_l_fc      <- r_l_fc      + fed_uplift
-    r_l_fc_gr   <- r_l_fc_gr   + fed_uplift
-    r_l_fc_con  <- r_l_fc_con  + fed_uplift
-  }
   
   xr_RoW[i] <- xr_RoW[i-1]
   xr_Br[i] <- xr_Br[i-1]
@@ -895,9 +940,9 @@ for (i in 2:nPeriods) {
     # reduction vs the unsubsidised rate is phi*(r_l_Br - r_l_LC_MDB), self-
     # bounded by the blend. With no capitalization, l_lc_MDB = 0 -> phi = 0 -> the
     # markdown is zero and the green rate is unchanged (no policy = no subsidy).
-    green_loan_pool <- l_firm_Br[i-1] * share_gr_b_lag
-    phi_mdb <- if (green_loan_pool > 1e-9)
-      min(l_lc_MDB[i-1] / green_loan_pool, 1) else 0
+    green_loan_pool[i] <- l_firm_Br[i-1] * share_gr_b_lag
+    phi_mdb <- if (green_loan_pool[i] > 1e-9)
+      min(l_lc_MDB[i-1] / green_loan_pool[i], 1) else 0
     # Design eqs. mdb_reff / mdb_mu: the effective (blended) green rate firms pay
     # is the bank's ordinary rate on the (1-phi) own-funded slice and the
     # concessional rate plus a small bank spread on the phi MDB-funded slice.
@@ -960,7 +1005,7 @@ for (i in 2:nPeriods) {
     k_target_Br[i] <- k0_Br + k1_Br * q_nalin_Br[i]
     
     K_target_Br[i] <- k_target_Br[i] * y_Br[i-1]
-    inv_d_Br[i] <- g_inv_Br * (K_target_Br[i] - k_Br[i-1]) + da_Br[i]
+    inv_d_Br[i] <- Ia_Br + g_inv_Br * (K_target_Br[i] - k_Br[i-1]) + da_Br[i]
     
     inv_gamma_Br <- (gamma0_Br + gamma1_Br*inv_Br[i-1] +
                        gamma2_Br*gov_tot_Br[i-1]) * (1 - d_t_Br[i-1])
@@ -970,32 +1015,25 @@ for (i in 2:nPeriods) {
     inv_RoW[i] <- (gamma0_RoW + gamma1_RoW*inv_RoW[i-1] +
                      gamma2_RoW*gov_tot_RoW[i-1]) * (1 - d_t_RoW[i-1])
     
-    # Channel 1 (Bueno-Kesse relative-rate): green investment responds to the
-    # effective green rate RELATIVE to the conventional rate. mu = r_l_RoW_br /
-    # r_l_con_br is the endogenous markdown factor (1 at no policy, < 1 as the
-    # MDB concession deepens). The term (1 - mu) is the proportional rate gap;
-    # scaled by the green loan pool it replaces the old absolute-gap gifdif.
+    # --- Green/conventional split: balanced-growth allocation of the Nalin total ---
+    # SOURCE: Bueno & Kesse cost-of-finance channel. The split is centred on the
+    # CURRENT (lagged) green capital share, so under balanced rates each type is
+    # the same fraction of its own stock -> both grow at the same rate -> the
+    # green/conventional ratio is static (only the initial LEVELS differ). The MDB
+    # markdown mu = r_green/r_con < 1 tilts the split toward green through the
+    # interest channel; shares sum to 1 so the total stays the Nalin accelerator
+    # (no double-count). mu = 1 -> tilt 0 -> share = stock share -> static ratio.
     mu_gr_Br <- if (r_l_con_br > 1e-9) r_l_RoW_br / r_l_con_br else 1
-    bk_rate_Br <- bk_i2_Br * (1 - mu_gr_Br) * (l_firm_Br[i-1] * share_gr_b_lag)
-    # Productivity-ratio term (design eq. inv_br_clean, I_3C): green investment
-    # rises when green capital is becoming more productive than conventional.
-    # Lagged ratio; (ratio - 1) so the term is 0 at the baseline ratio of 1.
-    q_ratio_Br <- if (q_d_Br[i-1] > 1e-9) q_c_Br[i-1] / q_d_Br[i-1] else 1
-    bk_prod_Br <- bk_i3_Br * (q_ratio_Br - 1) * (l_firm_Br[i-1] * share_gr_b_lag)
-    inv_gr_Br_t[i] <- (chi1_Br*gov_gr_Br[i] + chi2_Br*y_Br[i] +
-                         chi3_Br*d_t_Br[i-1] +
-                         chi4_Br*bk_rate_Br +
-                         chi4_Br*bk_prod_Br +
-                         chi5_Br * delta_l_fc_gr_Br[i-1] * xr_Br[i]) *
-      (1 - d_t_Br[i-1])
-    gifdif_RoW <- max(r_l_con_gn - r_l_RoW_gn, 0) *
-      (l_firm_RoW[i-1] * share_gr_g_lag)
+    s_gr_base_Br <- if (k_Br[i-1] > 1e-9) k_gr_Br[i-1] / k_Br[i-1] else 0.5
+    s_gr_base_Br <- min(max(s_gr_base_Br, 1e-9), 1 - 1e-9)
+    share_gr_Br  <- 1 / (1 + exp(-(log(s_gr_base_Br/(1 - s_gr_base_Br)) +
+                                     bk_sens_Br * (1 - mu_gr_Br))))
+    inv_gr_Br[i]  <- share_gr_Br * inv_Br[i]
+    inv_con_Br[i] <- inv_Br[i] - inv_gr_Br[i]
+    # RoW: no MDB, split left on its chi form for now (pending the same treatment)
     inv_gr_RoW_t[i] <- (chi1_RoW*gov_gr_RoW[i] + chi2_RoW*y_RoW[i] +
-                          chi3_RoW*d_t_RoW[i-1] +
-                          chi4_RoW*gifdif_RoW) * (1 - d_t_RoW[i-1])
-    inv_gr_Br[i]   <- min(inv_gr_Br_t[i], inv_Br[i])
+                          chi3_RoW*d_t_RoW[i-1]) * (1 - d_t_RoW[i-1])
     inv_gr_RoW[i]   <- min(inv_gr_RoW_t[i], inv_RoW[i])
-    inv_con_Br[i]  <- inv_Br[i] - inv_gr_Br[i]
     inv_con_RoW[i]  <- inv_RoW[i] - inv_gr_RoW[i]
     
     k_gr_Br[i]  <- k_gr_Br[i-1]  + inv_gr_Br[i]  - da_gr_Br[i]
@@ -1025,34 +1063,30 @@ for (i in 2:nPeriods) {
       inv_Br[i] - af_Br[i] - fu_Br[i] -
       (e_RoWBr_s[i] - e_RoWBr_s[i-1]) -
       (e_BrBr_s[i] - e_BrBr_s[i-1])
-    ldom_Br[i] <- lambda_dom_0 + lambda_dom_1 * lcd_Br[i]
-    ldom_Br[i] <- max(ldom_Br[i], 0)
+    # Capital controls (fc_loans_on = FALSE): firms fund the WHOLE financing gap
+    # domestically, so the FC residual is zero and l_fc_Br -> 0. TRUE keeps the
+    # lambda_dom_1 split (a share borrowed abroad in FC).
+    ldom_Br[i] <- if (fc_loans_on) lambda_dom_0 + lambda_dom_1 * lcd_Br[i] else lcd_Br[i]
     l_firm_Br[i] <- ldom_Br[i]
     fc_residual_Br[i] <- lcd_Br[i] - ldom_Br[i]
     # SOURCE: Bortz (2014) eq.31ai -- the financing need not met by domestic loans is
     # borrowed abroad in FC (l_fc); loan and interest convert at xr, so a real depreciation
     # raises the BRL burden -- the foreign-currency mismatch on the firm balance sheet.
-    if (inv_nalin_weight > 0) {
-      fc_demand_fc_units <- fc_residual_Br[i] / xr_Br[i]
-      fc_demand_fc_units <- max(fc_demand_fc_units, 0)
-      l_fc_Br_d[i] <- fc_demand_fc_units
-      if (fc_supply_mode == "passive") {
-        l_fc_Br_s[i] <- l_fc_Br_d[i]
-      } else {
-        l_fc_Br_s[i] <- l_fc_Br_d[i]   # branch reserved for rationing
-      }
-      l_fc_Br[i]       <- l_fc_Br_s[i]
-      delta_l_fc_Br[i] <- l_fc_Br[i] - l_fc_Br[i-1]
-      int_fc_Br[i] <- r_l_fc * l_fc_Br[i-1] * xr_Br[i]
-      
-      psi_gr_share_Br[i] <- 0.5 + kappa_fc * (r_l_fc_con - r_l_fc_gr)
-      delta_l_fc_gr_Br[i]  <- delta_l_fc_Br[i] * psi_gr_share_Br[i]
-      delta_l_fc_con_Br[i] <- delta_l_fc_Br[i] - delta_l_fc_gr_Br[i]
-      l_fc_gr_Br[i]  <- l_fc_gr_Br[i-1]  + delta_l_fc_gr_Br[i]
-      l_fc_con_Br[i] <- l_fc_con_Br[i-1] + delta_l_fc_con_Br[i]
-      int_fc_gr_Br[i]  <- r_l_fc_gr  * l_fc_gr_Br[i-1]
-      int_fc_con_Br[i] <- r_l_fc_con * l_fc_con_Br[i-1]
-    }
+    fc_demand_fc_units <- fc_residual_Br[i] / xr_Br[i]
+    fc_demand_fc_units <- max(fc_demand_fc_units, 0)
+    l_fc_Br_d[i] <- fc_demand_fc_units
+    l_fc_Br_s[i] <- l_fc_Br_d[i]
+    l_fc_Br[i]       <- l_fc_Br_s[i]
+    delta_l_fc_Br[i] <- l_fc_Br[i] - l_fc_Br[i-1]
+    int_fc_Br[i] <- r_l_fc * l_fc_Br[i-1] * xr_Br[i]
+    
+    psi_gr_share_Br[i] <- 0.5 + kappa_fc * (r_l_fc_con - r_l_fc_gr)
+    delta_l_fc_gr_Br[i]  <- delta_l_fc_Br[i] * psi_gr_share_Br[i]
+    delta_l_fc_con_Br[i] <- delta_l_fc_Br[i] - delta_l_fc_gr_Br[i]
+    l_fc_gr_Br[i]  <- l_fc_gr_Br[i-1]  + delta_l_fc_gr_Br[i]
+    l_fc_con_Br[i] <- l_fc_con_Br[i-1] + delta_l_fc_con_Br[i]
+    int_fc_gr_Br[i]  <- r_l_fc_gr  * l_fc_gr_Br[i-1]
+    int_fc_con_Br[i] <- r_l_fc_con * l_fc_con_Br[i-1]
     l_firm_RoW[i] <- l_firm_RoW[i-1] + inv_RoW[i] - af_RoW[i] - fu_RoW[i] -
       (e_BrRoW_s[i] - e_BrRoW_s[i-1]) -
       (e_RoWRoW_s[i] - e_RoWRoW_s[i-1])
@@ -1082,9 +1116,15 @@ for (i in 2:nPeriods) {
       M0_eff  <- mu0
     }
     
-    x_Br[i]  <- exp(X0_eff - eps1*log(xrb_lag) + eps_x_b*log(yg_i)) *
+    # xr quoted as reais per dollar (consistent with the FC-debt / reserve /
+    # revaluation side): a HIGHER xr_Br is a DEPRECIATION, so exports rise (+eps1)
+    # and imports fall (-mu1). Overvaluation is a LOW xr_Br (fewer exports, more
+    # imports). Signs aligned to the balance-sheet convention so a depreciation is
+    # competitive AND raises the dollar-debt burden (contractionary-depreciation
+    # tension). Moot at the peg (log(1)=0); only the off-peg shock response differs.
+    x_Br[i]  <- exp(X0_eff + eps1*log(xrb_lag) + eps_x_b*log(yg_i)) *
       (1 - ad_exp*d_t_Br[i-1])
-    im_Br[i] <- exp(M0_eff + mu1*log(xrb_lag) + eta_m_b*log(yb_i)) *
+    im_Br[i] <- exp(M0_eff - mu1*log(xrb_lag) + eta_m_b*log(yb_i)) *
       (1 + ad_im *d_t_RoW[i-1])
     x_RoW[i]  <- im_Br[i] * xr_RoW[i]
     im_RoW[i] <- x_Br[i]  * xr_RoW[i]
@@ -1144,59 +1184,67 @@ for (i in 2:nPeriods) {
     # stays at zero, so the sector is dormant automatically -- no on/off flag.
     # Sequence (all flows on LAGGED stocks -> no circularity with the bank/bill
     # blocks below). Two currency books:
-    #  FC book  : RoW bills (asset) <-> bonds + equity (liab). RoW-bill interest
-    #             services bond interest; surplus retained -> more RoW bills.
-    #             Both counterparties RoW-resident -> invisible to Brazil's BoP.
+    #  FC book  : RoW bills (asset) = the MDB's equity/capital cushion, funded by
+    #             capitalization + retained FC surplus. The FC bond is NOT levered off
+    #             these bills any more -- it funds the FC share of the LC loan (below),
+    #             so the RoW-bill book is the FC cushion that absorbs the FX losses on
+    #             the BRL lending. Both counterparties RoW-resident -> invisible to Brazil's BoP.
     #  BRL book: Br bills + LC loans to Br banks (assets), funded by converting
     #             bond proceeds FC->BRL (the one reserve-moving inflow) plus
     #             retained BRL interest. BRL interest is xr-free and recycled
     #             into Br bills. MDB carries the FX mismatch (FC liab, BRL assets).
-    # capitalization (policy): constant flow from cap_mdb_start, or one-shot
-    if (cap_mdb_mode == "oneshot")
-      cap_MDB[i] <- if (i == cap_mdb_start) cap_mdb_amt else 0
-    else
-      cap_MDB[i] <- if (i >= cap_mdb_start) cap_mdb_amt else 0
+    # capitalization (policy): one-shot injection of cap_mdb_amt at cap_mdb_start
+    cap_MDB[i] <- if (i == cap_mdb_start) cap_mdb_amt else 0
     
-    # FC book: interest on lagged RoW bills (income) and lagged bonds (expense);
-    # surplus is retained FC profit. With Bond_MDB_s <= lambda_mdb*b_RoW_MDB
-    # this is >= 0, so the MDB only ever pays bond interest it can cover.
+    # FC book: interest on lagged RoW bills (income) and lagged FC bonds (expense);
+    # surplus is retained FC profit. The capital-funded RoW-bill book dwarfs the small
+    # demand-driven FC bond, so fc_surplus >= 0 (the cushion out-earns the bond coupon).
     int_row_MDB[i]  <- r_RoW * b_RoW_MDB[i-1]
     int_bond_MDB[i] <- r_MDB * Bond_MDB_s[i-1]
     fc_surplus_MDB  <- int_row_MDB[i] - int_bond_MDB[i]
     
-    # RoW-bill holding grows by new capital + retained FC surplus
+    # RoW-bill cushion grows by new capital + retained FC surplus
     b_RoW_MDB[i] <- b_RoW_MDB[i-1] + cap_MDB[i] + fc_surplus_MDB
     
-    # FC bond sized on the LAGGED RoW-bill holding (mirror of the LC side, avoids
-    # the within-period circularity). At lambda_fc<1 the retained surplus compounds
-    # the book, so bond issuance grows over time (the MDB's self-financing).
-    Bond_MDB_s[i] <- lambda_fc * b_RoW_MDB[i-1]
-    Bond_MDB_d[i] <- Bond_MDB_s[i]                 # RoW HH absorb at r_MDB=r_RoW (indifferent)
-    
-    # BRL book: bond proceeds (FC) converted to BRL fund the BRL asset book;
-    # retained BRL interest (xr-free) is recycled into Br bills.
-    int_lc_MDB[i] <- r_l_LC_MDB * l_lc_MDB[i-1]     # LC loan interest from Br banks (BRL, no xr)
-    int_br_MDB[i] <- r_Br       * b_Br_MDB[i-1]     # Br-bill interest (BRL)
-    # BRL bond coupon paid to Br HH (Option B: coupon on the lagged bond stock).
-    int_bond_LC_MDB[i] <- r_Br * Bond_LC_MDB_d[i-1]
-    # Retained BRL earnings sigma^LC = total BRL earnings - coupon paid out.
-    # At lambda_lc<1 this keeps the concessional LOAN spread + the bill interest
-    # on the un-bonded fraction -> the BRL book compounds (self-financing).
-    sigma_lc_MDB  <- int_lc_MDB[i] + int_br_MDB[i] - int_bond_LC_MDB[i]
-    BRL_funds_MDB <- Bond_MDB_s[i] * xr_Br[i]      # FC bonds -> BRL at the seam (xr_Br = BRL per FC)
-    # DEMAND-DETERMINED loan (design eq. mdb_loan): the MDB lends only what
-    # Brazil demands for green investment (the green loan pool), up to the funds
-    # raised. Replaces the old forced l_lc_MDB = BRL_funds (infinite demand).
-    l_lc_MDB[i] <- min(BRL_funds_MDB, green_loan_pool)
-    unlent_funds_MDB <- BRL_funds_MDB - l_lc_MDB[i]   # parked in Br bills (eq. mdb_bbr)
-    # BRL bond issued on the LAGGED buffer (mirror; avoids the lambda^LC=1 singularity),
-    # held by Br HH; proceeds recycle into the Br-bill buffer.
-    Bond_LC_MDB_s[i] <- lambda_lc * b_Br_MDB[i-1]
+    # DEMAND-DRIVEN ISSUANCE (design eq. mdb_issue): bond issuance is PULLED by the
+    # lagged demand for concessional loans (green_loan_pool(-1)), not by the MDB's own
+    # stock -- so it issues nothing when nobody wants a loan. The MDB is active once
+    # capitalized (b_RoW_MDB>0) or once it has built an LC book (b_Br_MDB>0).
+    gate_active <- (b_RoW_MDB[i-1] > 0) || (b_Br_MDB[i-1] > 0)
+    demand_MDB  <- if (gate_active) green_loan_pool[i-1] else 0
+    # ENDOGENOUS TILT: fund from whichever book is larger. psi_lc is the LC book's
+    # share of the MDB's total book; the LC book grows (positive carry) while the FC
+    # cushion lags, so psi_lc rises and the mix migrates FC -> BRL (FX mismatch -> 0).
+    psi_lc <- b_Br_MDB[i-1] / max(b_Br_MDB[i-1] + b_RoW_MDB[i-1], 1e-9)
+    # FC funds its (shrinking) share, capped at lambda_fc_cap of the cushion so the FC
+    # coupon can never exceed the cushion's interest (FC book self-sustaining, no drain).
+    Bond_MDB_s[i]    <- min((1 - psi_lc) * demand_MDB, lambda_fc_cap * b_RoW_MDB[i-1]) / xr_Br[i]
+    Bond_MDB_d[i]    <- Bond_MDB_s[i]                           # RoW HH absorb at r_MDB=r_RoW
+    # LC funds its share PLUS any FC shortfall (the residual), from the self-sustaining
+    # BRL book, so the loan demand is always fully funded.
+    Bond_LC_MDB_s[i] <- demand_MDB - Bond_MDB_s[i] * xr_Br[i]   # BRL bond, held by Br HH
     Bond_LC_MDB_d[i] <- Bond_LC_MDB_s[i]
-    dBond_LC_MDB <- Bond_LC_MDB_s[i] - Bond_LC_MDB_s[i-1]   # BRL-bond proceeds (eq. mdb_bbr)
-    # Br bills = residual buffer (eq. mdb_bbr): unlent funds + retained BRL
-    # interest (sigma^LC) + BRL-bond proceeds.
-    b_Br_MDB[i] <- b_Br_MDB[i-1] + unlent_funds_MDB + sigma_lc_MDB + dBond_LC_MDB
+    
+    # BRL-book retained earnings: concessional-loan spread + Br-bill interest - BRL coupon
+    int_lc_MDB[i]      <- r_l_LC_MDB * l_lc_MDB[i-1]   # LC loan interest from Br banks (BRL, no xr)
+    int_br_MDB[i]      <- r_Br       * b_Br_MDB[i-1]   # Br-bill interest (BRL)
+    int_bond_LC_MDB[i] <- r_Br       * Bond_LC_MDB_d[i-1]
+    sigma_lc_MDB       <- int_lc_MDB[i] + int_br_MDB[i] - int_bond_LC_MDB[i]
+    
+    # DEMAND-DETERMINED loan (design eq. mdb_loan): lend this period's green demand,
+    # capped by the BRL raised from both bonds. If demand outpaces the lagged issuance
+    # the excess is simply unmet; if it slackens the surplus parks in Br bills. That
+    # demand/issuance gap is real, but it is one period of demand change, not a runaway.
+    BRL_funds_MDB <- Bond_MDB_s[i] * xr_Br[i] + Bond_LC_MDB_s[i]   # total BRL raised (FC converted + BRL bond)
+    l_lc_MDB[i]   <- min(BRL_funds_MDB, green_loan_pool[i])
+    
+    # Br-bill buffer = residual, STOCK-FLOW CONSISTENT: it accrues only the NEW bond
+    # proceeds (FLOWS) not lent this period, plus retained BRL earnings -- never the
+    # whole bond stock (that stock-as-flow double-count was the b_Br_MDB blow-up).
+    new_brl_funds_MDB <- (Bond_MDB_s[i] - Bond_MDB_s[i-1]) * xr_Br[i] +
+      (Bond_LC_MDB_s[i] - Bond_LC_MDB_s[i-1])
+    b_Br_MDB[i] <- b_Br_MDB[i-1] + new_brl_funds_MDB -
+      (l_lc_MDB[i] - l_lc_MDB[i-1]) + sigma_lc_MDB
     
     f_MDB_RoW[i] <- 0                               # 100% retention: no remittance to RoW gov
     # net worth in FC (BRL assets -> FC via /xr_Br) and its FX revaluation
@@ -1279,7 +1327,7 @@ for (i in 2:nPeriods) {
     gov_con_Br[i] <- 0.006054 + 1.003373 * gov_con_Br[i-1]
     gov_con_RoW[i] <- 0.195770 + 1.003373 * gov_con_RoW[i-1]
     gov_gr_Br[i]  <- 0.0795
-    gov_gr_RoW[i]  <- if (run_s5 && i >= s5_start) 2.5703 * (1 + s5_uplift) else 2.5703
+    gov_gr_RoW[i]  <- 2.5703
     gov_tot_Br[i] <- gov_con_Br[i] + gov_gr_Br[i]
     gov_tot_RoW[i] <- gov_con_RoW[i] + gov_gr_RoW[i]
     
@@ -1296,8 +1344,10 @@ for (i in 2:nPeriods) {
     # SOURCE: Bortz (2014) eq.72u -- under the peg the central bank absorbs all excess
     # foreign-bill supply, so reserves move one-for-one with the balance of payments.
     # Peg (Bortz 73uFX/73a). Single closure: no toggle.
-    xr_RoW[i] <- 1
-    xr_Br[i]  <- 1
+    # Peg, with an optional one-off permanent re-peg at xr_shock_start (orthogonal
+    # to the MDB / capital-controls settings). xr_RoW is the mirror 1/xr_Br.
+    xr_Br[i]  <- if (xr_shock_on && i >= xr_shock_start) 1 + xr_shock_delta else 1
+    xr_RoW[i] <- 1 / xr_Br[i]
     
     # Foreign demand for Br (BRL) bills honoured at the peg (Bortz 66ai).
     b_RoWBr_s[i] <- b_RoWBr_d[i]
@@ -1354,10 +1404,6 @@ for (i in 2:nPeriods) {
     k_m_RoW[i]    <- k_m_RoW[i-1] + conv_m_RoW[i] - mat_RoW[i]
     k_m[i]          <- k_m_Br[i] + k_m_RoW[i]
     res_m[i]        <- res_m_Br[i] + res_m_RoW[i]
-    cen_Br[i]    <- emis_Br[i] / car
-    cen_RoW[i]    <- emis_RoW[i] / car
-    o2_Br[i]     <- emis_Br[i] - cen_Br[i]
-    o2_RoW[i]     <- emis_RoW[i] - cen_RoW[i]
     
     # ------------------- XI. ECOSYSTEM: ENERGY FLOWS ----------------------- #
     
@@ -1575,15 +1621,15 @@ for (i in 2:nPeriods) {
     cb_nw_RoW[i] <- (b_cb_RoWRoW_s[i] + a_s_RoW[i]) - h_RoW_s[i]
     # Redundant BRL-bill-market clearing (Bortz 71a): ~0 iff watertight.
     br_bill_resid[i] <- b_Br_s[i] -
-      (b_BrBr_s[i] + b_RoWBr_s[i] + b_Br_bank[i] + b_cb_BrBr_s[i])
+      (b_BrBr_s[i] + b_RoWBr_s[i] + b_Br_bank[i] + b_cb_BrBr_s[i] + b_Br_MDB[i])
     # Redundant US-bill-market clearing (Fed is residual): ~0 iff watertight.
     row_bill_resid[i] <- b_RoW_s[i] -
-      (b_RoWRoW_s[i] + b_RoW_bank[i] + b_cb_RoWRoW_s[i] + b_BrRoW_s[i] + b_cb_BrRoW_s[i])
+      (b_RoWRoW_s[i] + b_RoW_bank[i] + b_cb_RoWRoW_s[i] + b_BrRoW_s[i] + b_cb_BrRoW_s[i] + b_RoW_MDB[i])
     
-    q_Br[i]     <- (e_Br_real_s[i]*p_e_Br[i] + l_firm_Br[i]) / max(k_Br[i], 1e-6)
-    q_RoW[i]     <- (e_RoW_real_s[i]*p_e_RoW[i] + l_firm_RoW[i]) / max(k_RoW[i], 1e-6)
-    lev_f_Br[i] <- l_firm_Br[i] / max(k_Br[i], 1e-6)
-    lev_f_RoW[i] <- l_firm_RoW[i] / max(k_RoW[i], 1e-6)
+    q_Br[i]     <- (e_Br_real_s[i]*p_e_Br[i] + l_firm_Br[i]) / k_Br[i]
+    q_RoW[i]     <- (e_RoW_real_s[i]*p_e_RoW[i] + l_firm_RoW[i]) / k_RoW[i]
+    lev_f_Br[i] <- l_firm_Br[i] / k_Br[i]
+    lev_f_RoW[i] <- l_firm_RoW[i] / k_RoW[i]
     liq_b_Br[i] <- (a_s_Br[i] + dep_bank_Br[i] - l_s_Br[i]) / max(dep_bank_Br[i], 1e-6)
     liq_b_RoW[i] <- (a_s_RoW[i] + dep_bank_RoW[i] - l_s_RoW[i]) / max(dep_bank_RoW[i], 1e-6)
     y[i]   <- y_Br[i] + y_RoW[i]
@@ -1737,10 +1783,10 @@ check_consistency <- function(p = 1, tol = 1e-9) {
   cat(sprintf("\n=== check_consistency(period = %d) ===\n", p))
   cat("-- instrument-market clearing (must be ~0) --\n")
   line("Br bill market",
-       g("b_Br_s") - (g("b_BrBr_s") + g("b_RoWBr_s") + g("b_Br_bank") + g("b_cb_BrBr_s")))
+       g("b_Br_s") - (g("b_BrBr_s") + g("b_RoWBr_s") + g("b_Br_bank") + g("b_cb_BrBr_s") + g("b_Br_MDB")))
   line("RoW bill market",
        g("b_RoW_s") - (g("b_RoWRoW_s") + g("b_RoW_bank") + g("b_cb_RoWRoW_s") +
-                         g("b_BrRoW_s") + g("b_cb_BrRoW_s")))
+                         g("b_BrRoW_s") + g("b_cb_BrRoW_s") + g("b_RoW_MDB")))
   line("Br equity (s = d)",  g("e_BrBr_s")   - g("e_BrBr_d"))
   line("RoW equity (s = d)", g("e_RoWRoW_s") - g("e_RoWRoW_d"))
   line("Br equity (real*p)",  g("e_Br_real_s")*g("p_e_Br")   - g("e_BrBr_s"))
@@ -1750,7 +1796,7 @@ check_consistency <- function(p = 1, tol = 1e-9) {
        g("v_Br") - (g("b_BrBr_d") + g("b_BrRoW_d") + g("e_BrBr_d") + g("dep_Br") + g("h_Br_h")))
   line("RoW household",
        g("v_RoW") - (g("b_RoWRoW_d") + g("b_RoWBr_d")*g("xr_RoW") + g("e_RoWRoW_d") + g("dep_RoW") + g("h_RoW_h")))
-  line("Br banks",  (g("l_s_Br")  + g("b_Br_bank"))  - (g("dep_bank_Br")  + g("a_s_Br")))
+  line("Br banks",  (g("l_s_Br")  + g("b_Br_bank"))  - (g("dep_bank_Br")  + g("a_s_Br") + g("l_lc_MDB")))
   line("RoW banks", (g("l_s_RoW") + g("b_RoW_bank") + g("l_fc_Br")) - (g("dep_bank_RoW") + g("a_s_RoW")))
   cat("-- informational (NOT orphans) --\n")
   line("Br CB net worth (V_cba)",
@@ -1900,41 +1946,48 @@ legend("topleft",
        legend = c("Firm leverage (L_firm/K, left)", "Govt debt (BRL, right)"),
        col = c("orange", "steelblue"), lwd = 2, bty = "n", cex = 0.85)
 
-# --- MDB sector: bill holdings & bonds capitalised -------------------------
-# Populated only when cap_mdb_amt > 0 (default 0 = dormant baseline). FC-book
-# quantities are US$ (left axis); LC-book quantities are reais (right axis) --
-# the scale gap is the LC-book compounding, NOT the exchange rate (xr = 1 under
-# the peg). Dotted vertical line = capitalisation onset (cap_mdb_start).
+# --- MDB sector: bill holdings & bonds issued ------------------------------
+# Populated only when cap_mdb_amt > 0 (default 0 = dormant baseline). FC quantities
+# are US$, LC quantities are reais; under the peg (xr = 1) they coincide unit-for-unit,
+# so both panels use a SHARED axis (no twin axis, no scale distortion). With the 50/50
+# split the FC and BRL bonds are numerically EQUAL at the peg, so the BRL series is
+# drawn as MARKERS riding on the FC line: you see both series and that they coincide;
+# off the peg the markers lift off the line. Markers thinned to every 5th period.
+# Dotted vertical line = capitalisation onset (cap_mdb_start).
+mk <- seq(2, length(periods), by = 5)   # marker subset (disambiguates coincident series)
+
 layout(matrix(1:2, nrow = 1, ncol = 2, byrow = TRUE))
-par(mar = c(4, 4.5, 3, 4.5), cex.main = 1.0, font.main = 1, oma = c(0, 0, 2, 0))
+par(mar = c(4, 4.5, 3, 1.5), cex.main = 1.0, font.main = 1, oma = c(0, 0, 2, 0))
 
-# (a) bill holdings: RoW bills (US$, left) vs Br bills (reais, right)
-plot(periods, b_RoW_MDB[i_plot], type = "l", lwd = 2, col = "forestgreen",
-     main = "a) MDB bill holdings",
-     xlab = "Period", ylab = "RoW bills held (US$)")
+# (a) bill holdings on ONE axis: RoW bills (FC cushion) and Br bills (BRL buffer)
+ymax_a <- max(c(b_RoW_MDB[i_plot], b_Br_MDB[i_plot]), na.rm = TRUE) * 1.05
+if (!is.finite(ymax_a) || ymax_a <= 0) ymax_a <- 1
+plot(periods, b_RoW_MDB[i_plot], type = "l", lwd = 2.5, col = "forestgreen",
+     main = "a) MDB bill holdings", ylim = c(0, ymax_a),
+     xlab = "Period", ylab = "Holding (US$ / reais)")
 add_guard_lines()
 abline(v = cap_mdb_start, lty = 3, col = "grey45")
-par(new = TRUE)
-plot(periods, b_Br_MDB[i_plot], type = "l", lwd = 2, col = "orange",
-     axes = FALSE, xlab = "", ylab = "")
-axis(4); mtext("Br bills held (reais)", side = 4, line = 3)
+lines(periods, b_Br_MDB[i_plot], lwd = 1.6, col = "darkorange")
+points(periods[mk], (b_Br_MDB[i_plot])[mk], pch = 1, cex = 0.85, col = "darkorange")
 legend("topleft",
-       legend = c("RoW bills (US$, left)", "Br bills (reais, right)"),
-       col = c("forestgreen", "orange"), lwd = 2, bty = "n", cex = 0.78)
+       legend = c("RoW bills = FC cushion (US$)", "Br bills = BRL buffer (reais)"),
+       col = c("forestgreen", "darkorange"), lwd = c(2.5, 1.6), pch = c(NA, 1),
+       bty = "n", cex = 0.76)
 
-# (b) bonds capitalised: FC bond -> RoW HH (US$, left) vs BRL bond -> Br HH (reais, right)
-plot(periods, Bond_MDB_s[i_plot], type = "l", lwd = 2, col = "forestgreen",
-     main = "b) MDB bonds capitalised",
-     xlab = "Period", ylab = "FC bond held by RoW HH (US$)")
+# (b) bonds on ONE axis: FC bond -> RoW HH (line) and BRL bond -> Br HH (markers on it)
+ymax_b <- max(c(Bond_MDB_s[i_plot], Bond_LC_MDB_s[i_plot]), na.rm = TRUE) * 1.05
+if (!is.finite(ymax_b) || ymax_b <= 0) ymax_b <- 1
+plot(periods, Bond_MDB_s[i_plot], type = "l", lwd = 2.5, col = "forestgreen",
+     main = "b) MDB bonds issued", ylim = c(0, ymax_b),
+     xlab = "Period", ylab = "Bond issued (US$ face / reais)")
 add_guard_lines()
 abline(v = cap_mdb_start, lty = 3, col = "grey45")
-par(new = TRUE)
-plot(periods, Bond_LC_MDB_s[i_plot], type = "l", lwd = 2, col = "orange",
-     axes = FALSE, xlab = "", ylab = "")
-axis(4); mtext("BRL bond held by Br HH (reais)", side = 4, line = 3)
+lines(periods, Bond_LC_MDB_s[i_plot], lwd = 1.6, col = "darkorange")
+points(periods[mk], (Bond_LC_MDB_s[i_plot])[mk], pch = 1, cex = 0.85, col = "darkorange")
 legend("topleft",
-       legend = c("FC bond -> RoW HH (US$, left)", "BRL bond -> Br HH (reais, right)"),
-       col = c("forestgreen", "orange"), lwd = 2, bty = "n", cex = 0.78)
+       legend = c("FC bond -> RoW HH (US$ face)", "BRL bond -> Br HH (reais)"),
+       col = c("forestgreen", "darkorange"), lwd = c(2.5, 1.6), pch = c(NA, 1),
+       bty = "n", cex = 0.76)
 
 mtext("MDB sector", outer = TRUE, cex = 1.05, font = 2)
 layout(1)
@@ -1964,24 +2017,22 @@ plot(periods, gdp_gr_Br_pct, type = "l", lwd = 2, col = "orange",
 add_guard_lines()
 lines(periods, gdp_gr_RoW_pct, lwd = 2, col = "forestgreen")
 abline(h = 0, lty = 2, col = "grey50")
-if (shock_fed) abline(v = t_shock_fed, lty = 3, col = "red")
 legend("topright",
-       legend = c("Br", "RoW", if (shock_fed) "Fed shock"),
-       col    = c("orange", "forestgreen", if (shock_fed) "red"),
-       lwd    = c(2, 2, if (shock_fed) 1),
-       lty    = c(1, 1, if (shock_fed) 3),
+       legend = c("Br", "RoW"),
+       col    = c("orange", "forestgreen"),
+       lwd    = c(2, 2),
+       lty    = c(1, 1),
        bty = "n", cex = 0.85)
 
 plot(periods, k_gr_Br[i_plot], type = "l", lwd = 2, col = "forestgreen",
      main = "Br green capital stock",
      xlab = "Period", ylab = "k_gr_Br (T USD)")
 add_guard_lines()
-if (shock_fed) abline(v = t_shock_fed, lty = 3, col = "red")
 legend("topleft",
-       legend = c("Br green capital", if (shock_fed) "Fed shock"),
-       col    = c("forestgreen", if (shock_fed) "red"),
-       lwd    = c(2, if (shock_fed) 1),
-       lty    = c(1, if (shock_fed) 3),
+       legend = c("Br green capital"),
+       col    = c("forestgreen"),
+       lwd    = c(2),
+       lty    = c(1),
        bty = "n", cex = 0.85)
 
 plot(periods, kgr_gr_Br_pct, type = "l", lwd = 2, col = "orange",
@@ -1991,12 +2042,11 @@ plot(periods, kgr_gr_Br_pct, type = "l", lwd = 2, col = "orange",
 add_guard_lines()
 lines(periods, kgr_gr_RoW_pct, lwd = 2, col = "forestgreen")
 abline(h = 0, lty = 2, col = "grey50")
-if (shock_fed) abline(v = t_shock_fed, lty = 3, col = "red")
 legend("topright",
-       legend = c("Br", "RoW", if (shock_fed) "Fed shock"),
-       col    = c("orange", "forestgreen", if (shock_fed) "red"),
-       lwd    = c(2, 2, if (shock_fed) 1),
-       lty    = c(1, 1, if (shock_fed) 3),
+       legend = c("Br", "RoW"),
+       col    = c("orange", "forestgreen"),
+       lwd    = c(2, 2),
+       lty    = c(1, 1),
        bty = "n", cex = 0.85)
 
 par(old.par2)
